@@ -2140,7 +2140,7 @@
                     <div class="icon">✉️</div>
                     <div>
                         <h4>Email</h4>
-                        <p><a href="mailto:info@razvodim-krasivo.ru">info@razvodim-krasivo.ru</a></p>
+                        <p><a href="/cdn-cgi/l/email-protection#71181f171e3103100b071e15181c5c1a03100218071e5f0304"><span class="__cf_email__" data-cfemail="274e4941486755465d5148434e4a0a4c5546544e5148095552">[email&#160;protected]</span></a></p>
                     </div>
                 </div>
                 <div class="contact-item">
@@ -2221,7 +2221,7 @@
         <button class="chat-btn" onclick="toggleChat()">💬</button>
     </div>
 
-    <script>
+    <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
         // Cookie banner
         setTimeout(() => {
             if (!localStorage.getItem('cookiesAccepted')) {
@@ -2317,12 +2317,35 @@
             document.getElementById('calcResult').classList.add('show');
         }
 
+        // Telegram Bot Config
+        const TELEGRAM_BOT_TOKEN = '8343456351:AAGqQSgQFDyeh4cfNthAkcbXnRva0E6E36A';
+        const TELEGRAM_CHAT_ID = '870778915';
+
+        async function sendToTelegram(text) {
+            const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: TELEGRAM_CHAT_ID,
+                        text: text,
+                        parse_mode: 'HTML'
+                    })
+                });
+                return response.ok;
+            } catch (error) {
+                console.error('Telegram error:', error);
+                return false;
+            }
+        }
+
         // Chat widget
         function toggleChat() {
             document.getElementById('chatWindow').classList.toggle('active');
         }
 
-        function sendMessage() {
+        async function sendMessage() {
             const input = document.getElementById('chatInput');
             const message = input.value.trim();
             
@@ -2339,12 +2362,16 @@
                 messagesContainer.appendChild(userMsg);
                 
                 input.value = '';
+
+                // Send to Telegram
+                const telegramText = `💬 <b>Сообщение из чата:</b>\n\n${message}\n\n🕐 ${new Date().toLocaleString('ru-RU')}`;
+                await sendToTelegram(telegramText);
                 
                 // Auto-reply
                 setTimeout(() => {
                     const botMsg = document.createElement('div');
                     botMsg.className = 'chat-message';
-                    botMsg.textContent = 'Спасибо за сообщение! Наш специалист свяжется с вами в ближайшее время. Для быстрой связи звоните: +7 (999) 123-45-67';
+                    botMsg.textContent = 'Спасибо за сообщение! Мы получили его и скоро ответим. Для быстрой связи звоните: +7 (999) 123-45-67';
                     messagesContainer.appendChild(botMsg);
                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 }, 1000);
@@ -2356,9 +2383,25 @@
         });
 
         // Form submission
-        document.getElementById('contactForm').addEventListener('submit', (e) => {
+        document.getElementById('contactForm').addEventListener('submit', async (e) => {
             e.preventDefault();
-            alert('Спасибо за заявку! Виктория или Николай свяжутся с вами в ближайшее время. (Это демо-версия учебного проекта)');
+            
+            const form = e.target;
+            const name = form.querySelector('input[type="text"]').value;
+            const phone = form.querySelector('input[type="tel"]').value;
+            const service = form.querySelector('select').value || 'Не выбрано';
+            const message = form.querySelector('textarea').value || 'Не указано';
+
+            const telegramText = `📋 <b>НОВАЯ ЗАЯВКА С САЙТА!</b>\n\n👤 <b>Имя:</b> ${name}\n📞 <b>Телефон:</b> ${phone}\n📂 <b>Услуга:</b> ${service}\n💬 <b>Сообщение:</b> ${message}\n\n🕐 ${new Date().toLocaleString('ru-RU')}`;
+            
+            const success = await sendToTelegram(telegramText);
+            
+            if (success) {
+                alert('✅ Спасибо за заявку! Мы получили ваше сообщение и скоро свяжемся с вами.');
+                form.reset();
+            } else {
+                alert('❌ Произошла ошибка. Позвоните нам: +7 (999) 123-45-67');
+            }
         });
 
         // Animation on scroll
@@ -2382,14 +2425,4 @@
         }, observerOptions);
 
         document.querySelectorAll('.service-card, .team-member, .testimonial-card, .faq-item').forEach(el => {
-            observer.observe(el);
-        });
-
-        // Stats section observer for counters
-        const statsSection = document.querySelector('.stats');
-        if (statsSection) {
-            observer.observe(statsSection);
-        }
-    </script>
-</body>
-</html>
+            obse
