@@ -1,13 +1,13 @@
 // Генератор методических рекомендаций УСБ-М (проект «Россия Онлайн», RP).
 // Запуск: node generate.js  ->  ../Metodichka_USB-M.docx
-// Номера страниц в содержании берутся из toc-pages.json (см. build.sh).
+// Номера страниц в содержании берутся из toc-pages.json (см. build.py).
 
 const fs = require("fs");
 const path = require("path");
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType,
-  HeadingLevel, BorderStyle, ShadingType, VerticalAlign, Header, Footer, PageNumber, ImageRun, LineRuleType,
-  Bookmark, InternalHyperlink, LevelFormat, TabStopType, LeaderType, Tab,
+  HeadingLevel, BorderStyle, VerticalAlign, Header, Footer, PageNumber, ImageRun, LineRuleType,
+  Bookmark, InternalHyperlink, TabStopType, LeaderType, Tab,
 } = require("docx");
 
 const OUT = path.join(__dirname, "..", "Metodichka_USB-M.docx");
@@ -17,14 +17,12 @@ const tocPages = fs.existsSync(TOC_FILE) ? JSON.parse(fs.readFileSync(TOC_FILE, 
 const FONT = "Times New Roman";
 const MONO = "Courier New";
 const CW = 9355; // ширина текста, twips (A4, поля 30/15 мм)
-const C = {
-  accent: "7B1113", navy: "1F3864", ph: "1F4E79", hdr: "E4E4E4", script: "F7F2EA",
-  rp: "F1F1F1", warn: "FBEEEE", info: "EEF3FA", border: "8C8C8C", gray: "595959",
-};
+const BODY = 28; // 14 pt
+const TBL = 24; // 12 pt
 const L = AlignmentType.LEFT, CE = AlignmentType.CENTER, J = AlignmentType.JUSTIFIED, RI = AlignmentType.RIGHT;
 
 // ---------------------------------------------------------------- inline-разметка
-// **жирный**, *курсив*, [[поле для заполнения]], \t — табуляция
+// **жирный**, [[поле для заполнения]] -> [поле], \t — табуляция
 const clean = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== false));
 
 function textRuns(s, base) {
@@ -35,70 +33,41 @@ function textRuns(s, base) {
   });
   return out;
 }
-function inline(text, base) {
-  const out = [];
-  const re = /(\[\[[^\]]+\]\]|\*[^*]+\*)/g;
-  let last = 0, m;
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) out.push(...textRuns(text.slice(last, m.index), base));
-    const t = m[0];
-    if (t.startsWith("[[")) out.push(new TextRun({ ...base, text: "[" + t.slice(2, -2) + "]", color: C.ph, italics: true }));
-    else out.push(...textRuns(t.slice(1, -1), { ...base, italics: true }));
-    last = re.lastIndex;
-  }
-  if (last < text.length) out.push(...textRuns(text.slice(last), base));
-  return out;
-}
 function R(text, base = {}) {
   base = clean(base);
   const out = [];
-  for (const part of String(text).split(/(\*\*[\s\S]*?\*\*)/)) {
+  const s = String(text).replace(/\[\[([^\]]+)\]\]/g, "[$1]");
+  for (const part of s.split(/(\*\*[\s\S]*?\*\*)/)) {
     if (!part) continue;
-    if (part.length >= 4 && part.startsWith("**") && part.endsWith("**")) out.push(...inline(part.slice(2, -2), { ...base, bold: true }));
-    else out.push(...inline(part, base));
+    if (part.length >= 4 && part.startsWith("**") && part.endsWith("**")) out.push(...textRuns(part.slice(2, -2), { ...base, bold: true }));
+    else out.push(...textRuns(part, base));
   }
   return out;
 }
 
 // ---------------------------------------------------------------- абзацы
+let curSize; // undefined = 14 pt из стиля документа; для бланков приложений — 13 pt
 function P(text, o = {}) {
   const indent = o.hanging != null
-    ? { left: o.left ?? 709, hanging: o.hanging }
+    ? { left: o.left ?? 0, hanging: o.hanging }
     : { left: o.left ?? 0, firstLine: o.noIndent ? 0 : (o.firstLine ?? 709) };
   return new Paragraph({
     alignment: o.align ?? J,
     indent,
-    spacing: { before: o.before ?? 0, after: o.after ?? 100, line: o.line ?? 276 },
+    spacing: { before: o.before ?? 0, after: o.after ?? 120, line: o.line ?? 276 },
     keepNext: !!o.keepNext,
-    keepLines: !!o.keepLines,
+    keepLines: o.keepLines ?? true,
     pageBreakBefore: !!o.pageBreakBefore,
     tabStops: o.tabStops,
-    children: R(text, { size: o.size, color: o.color, font: o.font, bold: o.bold, italics: o.italics }),
+    children: R(text, { size: o.size ?? curSize, bold: o.bold, italics: o.italics, font: o.font }),
   });
 }
-// нумерованный пункт с висячим отступом: N("1.", "текст")
-function N(label, text, o = {}) {
-  const left = o.left ?? 1134, hanging = o.hanging ?? 425;
-  return new Paragraph({
-    alignment: J,
-    indent: { left, hanging },
-    tabStops: [{ type: TabStopType.LEFT, position: left }],
-    spacing: { after: o.after ?? 80, line: 276 },
-    keepNext: !!o.keepNext,
-    keepLines: true,
-    children: [new TextRun({ text: label, bold: !!o.boldLabel }), new TextRun({ children: [new Tab()] }), ...R(text, { size: o.size })],
-  });
-}
-const NL = (items, o = {}) => items.map((t, i) => N(o.labels ? o.labels[i] : `${(o.start ?? 1) + i}.`, t, o));
+// сквозная нумерация пунктов, как в ведомственных инструкциях
+let pn = 0;
+const PN = (text, o = {}) => P(`${++pn}. ${text}`, o);
 const LETTERS = ["а)", "б)", "в)", "г)", "д)", "е)", "ж)", "з)", "и)", "к)"];
-const AL = (items, o = {}) => NL(items, { ...o, labels: LETTERS });
-// маркированный список «–»
-const B = (text, level = 0) => new Paragraph({
-  numbering: { reference: "dash", level }, alignment: J, keepLines: true,
-  spacing: { after: 60, line: 276 }, children: R(text),
-});
-const BL = (items) => items.map((t) => B(t));
-const SP = (after = 120) => new Paragraph({ spacing: { before: 0, after, line: 240 }, children: [] });
+const SUB = (items, o = {}) => items.map((t, i) => P(`${o.letters ? LETTERS[i] : `${(o.start ?? 1) + i})`} ${t}`, { after: 80, ...o }));
+const DASH = (items, o = {}) => items.map((t) => P(`– ${t}`, { after: 80, ...o }));
 
 // ---------------------------------------------------------------- заголовки + содержание
 const toc = [];
@@ -112,52 +81,44 @@ function H1(text, o = {}) {
     pageBreakBefore: !!o.pageBreak,
     keepNext: true,
     keepLines: true,
-    spacing: { before: o.pageBreak ? 0 : 360, after: 200 },
-    children: [new Bookmark({ id, children: [new TextRun({ text, bold: true, size: 26, font: FONT, color: "000000" })] })],
+    spacing: { before: o.pageBreak ? 0 : 480, after: 240 },
+    children: [new Bookmark({ id, children: [new TextRun({ text, bold: true, size: BODY, font: FONT })] })],
   });
 }
 const H2 = (text, o = {}) => new Paragraph({
-  heading: HeadingLevel.HEADING_2, alignment: L, keepNext: true, keepLines: true, pageBreakBefore: !!o.pageBreak,
-  spacing: { before: 220, after: 100 },
-  children: [new TextRun({ text, bold: true, size: 24, font: FONT, color: "000000" })],
+  heading: HeadingLevel.HEADING_2, alignment: J, keepNext: true, keepLines: true, pageBreakBefore: !!o.pageBreak,
+  indent: { firstLine: 709 },
+  spacing: { before: 240, after: 120 },
+  children: [new TextRun({ text, bold: true, size: BODY, font: FONT })],
 });
 
-// ---------------------------------------------------------------- таблицы и блоки
-const bd = (color = C.border, size = 4) => ({ style: BorderStyle.SINGLE, size, color });
+// ---------------------------------------------------------------- таблицы и рамки (без цвета)
+const line = (size = 4) => ({ style: BorderStyle.SINGLE, size, color: "000000" });
 const NONE = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
 
 function cellParas(content, o = {}) {
   const arr = Array.isArray(content) ? content : String(content).split("\n");
-  return arr.map((line) => {
-    if (line instanceof Paragraph) return line;
-    const bullet = line.startsWith("– ");
-    return new Paragraph({
-      alignment: o.align ?? L,
-      indent: bullet ? { left: 227, hanging: 227 } : undefined,
-      spacing: { after: 40, line: 252 },
-      children: R(line, { size: o.size ?? 22, bold: o.bold, font: o.font, color: o.color }),
-    });
-  });
+  return arr.map((ln) => new Paragraph({
+    alignment: o.align ?? L,
+    indent: ln.startsWith("– ") ? { left: 227, hanging: 227 } : undefined,
+    spacing: { after: 40, line: 252 },
+    children: R(ln, { size: o.size ?? TBL, bold: o.bold, font: o.font }),
+  }));
 }
 function T(widths, header, rows, o = {}) {
   const sum = widths.reduce((a, b) => a + b, 0);
-  const borders = { top: bd(), bottom: bd(), left: bd(), right: bd() };
+  const borders = { top: line(), bottom: line(), left: line(), right: line() };
   const cell = (content, w, hdr, ex = {}) => new TableCell({
     width: { size: w, type: WidthType.DXA },
     borders,
-    shading: hdr || ex.fill ? { fill: hdr ? C.hdr : ex.fill, type: ShadingType.CLEAR, color: "auto" } : undefined,
-    margins: { top: 50, bottom: 50, left: 90, right: 90 },
+    margins: { top: 60, bottom: 60, left: 100, right: 100 },
     verticalAlign: hdr ? VerticalAlign.CENTER : VerticalAlign.TOP,
     columnSpan: ex.span,
-    children: cellParas(content, { size: o.size, bold: hdr || ex.bold, align: hdr ? CE : ex.align }),
+    children: cellParas(content, { bold: hdr || ex.bold, align: hdr ? CE : ex.align }),
   });
   const trs = [];
   if (header) trs.push(new TableRow({ tableHeader: true, cantSplit: true, children: header.map((h, i) => cell(h, widths[i], true)) }));
   for (const row of rows) {
-    if (row.section) {
-      trs.push(new TableRow({ cantSplit: true, children: [cell(row.section, sum, false, { span: widths.length, fill: "F3F3F3", bold: true })] }));
-      continue;
-    }
     trs.push(new TableRow({
       cantSplit: true,
       children: row.map((c, i) => cell(c, widths[i], false, {
@@ -168,9 +129,9 @@ function T(widths, header, rows, o = {}) {
   }
   return new Table({ width: { size: sum, type: WidthType.DXA }, columnWidths: widths, rows: trs });
 }
-function BOX(children, o = {}) {
-  const left = o.leftBorder ?? { style: BorderStyle.SINGLE, size: 24, color: o.color ?? C.accent };
-  const other = o.frame ? bd(o.color ?? C.accent, 6) : NONE;
+// рамка: тонкая чёрная линия, без заливки
+function FRAME(children, o = {}) {
+  const b = line(6);
   return new Table({
     width: { size: CW, type: WidthType.DXA },
     columnWidths: [CW],
@@ -178,123 +139,107 @@ function BOX(children, o = {}) {
       cantSplit: !!o.cantSplit,
       children: [new TableCell({
         width: { size: CW, type: WidthType.DXA },
-        borders: { left, top: other, bottom: other, right: other },
-        shading: { fill: o.fill ?? C.script, type: ShadingType.CLEAR, color: "auto" },
-        margins: { top: 100, bottom: 100, left: 200, right: 160 },
+        borders: { top: b, bottom: b, left: b, right: b },
+        margins: { top: 140, bottom: 120, left: 220, right: 220 },
         children,
       })],
     })],
   });
 }
-const boxTitle = (text, color) => new Paragraph({
-  spacing: { after: 80 }, keepNext: true,
-  children: [new TextRun({ text, bold: true, size: 19, color })],
-});
-// текст для чтения вслух
-function SCRIPT(title, lines, o = {}) {
-  const ch = [];
-  if (title) ch.push(boxTitle(title.toUpperCase(), C.accent));
-  for (const l of lines) {
-    ch.push(new Paragraph({ alignment: J, spacing: { after: 90, line: 276 }, children: R(l, { size: o.size ?? 23 }) }));
-  }
-  return BOX(ch, { fill: C.script, color: C.accent, cantSplit: o.cantSplit });
+const frameTitle = (text, sub) => [
+  new Paragraph({ keepNext: true, spacing: { after: sub ? 0 : 120 }, children: R(text, { bold: true, size: BODY }) }),
+  ...(sub ? [new Paragraph({ keepNext: true, spacing: { after: 120 }, children: R(sub, { size: TBL }) })] : []),
+];
+// текст для зачитывания вслух
+function SCRIPT(title, who, lines) {
+  return FRAME([
+    ...frameTitle(title, who),
+    ...lines.map((l) => new Paragraph({ alignment: L, spacing: { after: 120, line: 276 }, children: R(l, { size: BODY }) })),
+  ]);
 }
-// RP-отыгровка (OOC)
+// отыгровка (OOC)
 function RP(title, lines) {
-  const ch = [];
-  if (title) ch.push(boxTitle(title, "404040"));
-  for (const l of lines) {
-    if (l.startsWith("#")) {
-      ch.push(new Paragraph({ spacing: { before: 80, after: 30 }, keepNext: true, children: R(l.slice(1).trim(), { size: 20, bold: true, color: "404040" }) }));
-    } else {
-      ch.push(new Paragraph({ spacing: { after: 30, line: 240 }, children: R(l, { font: MONO, size: 19 }) }));
-    }
-  }
-  return BOX(ch, { fill: C.rp, leftBorder: { style: BorderStyle.SINGLE, size: 24, color: "7F7F7F" } });
+  return FRAME([
+    ...frameTitle(title),
+    ...lines.map((l) => l.startsWith("#")
+      ? new Paragraph({ spacing: { before: 100, after: 40 }, keepNext: true, children: R(l.slice(1).trim(), { size: TBL, bold: true }) })
+      : new Paragraph({ spacing: { after: 40, line: 240 }, children: R(l, { font: MONO, size: 21 }) })),
+  ]);
 }
-// выделенный блок: kind = "warn" | "info"
-function NOTE(title, lines, kind = "warn", o = {}) {
-  const color = kind === "warn" ? C.accent : C.navy;
-  const ch = [boxTitle(title, color)];
-  for (const l of lines) {
-    ch.push(new Paragraph({
-      alignment: J,
-      indent: l.startsWith("– ") ? { left: 227, hanging: 227 } : undefined,
-      spacing: { after: o.after ?? 50, line: 264 },
-      children: R(l, { size: o.size ?? 22 }),
-    }));
-  }
-  return BOX(ch, { fill: kind === "warn" ? C.warn : C.info, color, frame: true });
+function NOTE(title, lines) {
+  return FRAME([
+    ...frameTitle(title),
+    ...lines.map((l) => new Paragraph({ alignment: L, spacing: { after: 100, line: 276 }, children: R(l, { size: BODY }) })),
+  ]);
 }
-// диалог: [["Оперативник", "реплика"], ["Задержанный", "..."]]
-function DIALOG(rows, w0 = 1850) {
+// диалог: [["Докладчик", "вопрос"], ["Задержанный", "ответ"]]
+function DIALOG(rows, w0 = 2100) {
   const widths = [w0, CW - w0];
-  const borders = { top: bd("C9C9C9"), bottom: bd("C9C9C9"), left: NONE, right: NONE };
+  const borders = { top: line(), bottom: line(), left: NONE, right: NONE };
   return new Table({
     width: { size: CW, type: WidthType.DXA },
     columnWidths: widths,
-    rows: rows.map(([who, what]) => {
-      const ours = !/^(Задержанный|Объект|Коллега|→)/.test(who);
-      return new TableRow({
-        cantSplit: true,
-        children: [
-          new TableCell({
-            width: { size: widths[0], type: WidthType.DXA }, borders,
-            shading: { fill: ours ? C.script : "FFFFFF", type: ShadingType.CLEAR, color: "auto" },
-            margins: { top: 60, bottom: 60, left: 100, right: 80 },
-            children: [new Paragraph({ children: R(who, { size: 20, bold: true, color: ours ? C.accent : C.gray }) })],
-          }),
-          new TableCell({
-            width: { size: widths[1], type: WidthType.DXA }, borders,
-            margins: { top: 60, bottom: 60, left: 120, right: 80 },
-            children: cellParas(what, { size: 23 }),
-          }),
-        ],
-      });
-    }),
+    rows: rows.map(([who, what]) => new TableRow({
+      cantSplit: true,
+      children: [
+        new TableCell({
+          width: { size: widths[0], type: WidthType.DXA }, borders,
+          margins: { top: 80, bottom: 80, left: 60, right: 80 },
+          children: [new Paragraph({ children: R(who, { size: TBL, bold: who === "Докладчик" }) })],
+        }),
+        new TableCell({
+          width: { size: widths[1], type: WidthType.DXA }, borders,
+          margins: { top: 80, bottom: 80, left: 120, right: 60 },
+          children: cellParas(what, { size: BODY }),
+        }),
+      ],
+    })),
   });
 }
+const SP = (after = 160) => new Paragraph({ spacing: { before: 0, after, line: 240 }, children: [] });
 function FIG(file, caption, w, h) {
   return [
     new Paragraph({
-      alignment: CE, keepNext: true, spacing: { before: 120, after: 60, line: 240, lineRule: LineRuleType.AT_LEAST },
+      alignment: CE, keepNext: true, spacing: { before: 120, after: 80, line: 240, lineRule: LineRuleType.AT_LEAST },
       children: [new ImageRun({
         type: "png", data: fs.readFileSync(path.join(__dirname, file)),
         transformation: { width: w, height: h },
         altText: { title: caption, description: caption, name: file },
       })],
     }),
-    P(caption, { align: CE, noIndent: true, italics: true, size: 21, after: 160 }),
+    P(caption, { align: CE, noIndent: true, size: TBL, after: 200 }),
   ];
 }
 
 // ---------------------------------------------------------------- элементы служебных документов
 const LETTERHEAD = () => [
-  P("ФЕДЕРАЛЬНАЯ СЛУЖБА БЕЗОПАСНОСТИ РОССИЙСКОЙ ФЕДЕРАЦИИ", { align: CE, noIndent: true, bold: true, after: 0 }),
-  P("Управление собственной безопасности по городу Москва", { align: CE, noIndent: true, after: 0 }),
-  P("г. Москва, ул. Большая Лубянка, д. 27", { align: CE, noIndent: true, size: 21, after: 280 }),
+  P("ФЕДЕРАЛЬНАЯ СЛУЖБА БЕЗОПАСНОСТИ РОССИЙСКОЙ ФЕДЕРАЦИИ", { align: CE, noIndent: true, bold: true, after: 0, size: 26 }),
+  P("Управление собственной безопасности по городу Москва", { align: CE, noIndent: true, after: 0, size: 26 }),
+  P("г. Москва, ул. Большая Лубянка, д. 27", { align: CE, noIndent: true, size: TBL, after: 280 }),
 ];
 const DOC_TITLE = (spaced, sub) => [
-  P(spaced, { align: CE, noIndent: true, bold: true, size: 30, after: sub ? 40 : 200, keepNext: true }),
+  P(spaced, { align: CE, noIndent: true, bold: true, size: 32, after: sub ? 60 : 200, keepNext: true }),
   ...(sub ? [P(sub, { align: CE, noIndent: true, bold: true, after: 200, keepNext: true })] : []),
 ];
 const DATE_NO = (no = "______") => P(`«___» ____________ 2026 г.\t№ ${no}`, {
-  noIndent: true, align: L, after: 40, tabStops: [{ type: TabStopType.RIGHT, position: CW }],
+  noIndent: true, align: L, after: 60, tabStops: [{ type: TabStopType.RIGHT, position: CW }],
 });
-const CITY = () => P("г. Москва", { align: CE, noIndent: true, after: 200 });
-// блок справа (адресат, «УТВЕРЖДАЮ»)
+const CITY = () => P("г. Москва", { align: CE, noIndent: true, after: 240 });
+const HEADWORD = (text) => P(text, { align: CE, noIndent: true, bold: true, before: 120, keepNext: true });
+const FIELD = (label, value = "") => P(`**${label}:** ${value}`, { noIndent: true, after: 80 });
+// блок справа (адресат, «УТВЕРЖДАЮ», гриф)
 const RIGHT_BLOCK = (lines, o = {}) => lines.map((l, i) => P(l, {
-  noIndent: true, align: L, left: o.left ?? 5103, after: i === lines.length - 1 ? (o.after ?? 240) : 0,
-  bold: o.boldFirst && i === 0,
+  noIndent: true, align: L, left: o.left ?? 4820, after: i === lines.length - 1 ? (o.after ?? 280) : 0,
+  bold: o.boldFirst && i === 0, size: o.size ?? TBL, line: 252,
 }));
 function SIGN(roleLines, name = "И.О. Фамилия") {
   return [
-    ...roleLines.map((l, i) => P(l, { noIndent: true, align: L, after: 0, before: i === 0 ? 240 : 0, keepNext: true })),
-    P(`_______________ / ${name}`, { noIndent: true, align: L, before: 200, after: 0, keepNext: true }),
+    ...roleLines.map((l, i) => P(l, { noIndent: true, align: L, after: 0, before: i === 0 ? 220 : 0, keepNext: true })),
+    P(`_______________ / ${name}`, { noIndent: true, align: L, before: 160, after: 0, keepNext: true }),
     new Paragraph({
-      tabStops: [{ type: TabStopType.LEFT, position: 500 }, { type: TabStopType.LEFT, position: 2150 }],
-      spacing: { after: 60 },
-      children: R("\tподпись\tИ.О. Фамилия", { size: 16, italics: true }),
+      tabStops: [{ type: TabStopType.LEFT, position: 500 }, { type: TabStopType.LEFT, position: 2300 }],
+      spacing: { after: 80 },
+      children: R("\tподпись\tИ.О. Фамилия", { size: 18 }),
     }),
   ];
 }
@@ -305,10 +250,10 @@ function APPX(n, title) {
     new Paragraph({
       heading: HeadingLevel.HEADING_1, alignment: RI, pageBreakBefore: true, keepNext: true,
       spacing: { before: 0, after: 0 },
-      children: [new Bookmark({ id, children: [new TextRun({ text: `Приложение ${n}`, bold: true, size: 22, font: FONT, color: "000000" })] })],
+      children: [new Bookmark({ id, children: [new TextRun({ text: `Приложение ${n}`, bold: true, size: 24, font: FONT })] })],
     }),
-    P("к методическим рекомендациям УСБ-М", { align: RI, noIndent: true, size: 20, after: 0 }),
-    P("(образец)", { align: RI, noIndent: true, size: 20, italics: true, color: C.gray, after: 240 }),
+    P("к методическим рекомендациям УСБ-М", { align: RI, noIndent: true, size: 22, after: 0 }),
+    P("(образец)", { align: RI, noIndent: true, size: 22, after: 280 }),
   ];
 }
 
@@ -316,681 +261,587 @@ function APPX(n, title) {
 const body = [];
 const add = (...items) => items.flat().forEach((x) => body.push(x));
 
+// ------------------------------------------------------------------------ ВВЕДЕНИЕ
+add(H1("ВВЕДЕНИЕ", { pageBreak: true, id: "vvedenie" }));
+add(P("Настоящие методические рекомендации построены на порядке, по которому ФСБ России документирует получение взяток: от поступления информации до передачи материалов для принятия процессуального решения. Этапы, названия документов и формулировки взяты из реальной практики и приведены в соответствие с законодательством РО."));
+add(P("Задача УСБ-М — выявить факт получения взятки, задокументировать его, задержать подозреваемого и передать материалы в прокуратуру."));
+add(P("**УСБ-М вину не устанавливает.** Мы фиксируем факты и задерживаем по подозрению. Решение о привлечении к ответственности и о наказании принимает прокуратура."));
+add(P("Поэтому в рапортах, актах, докладах и официальных сообщениях используются только формулировки подозрения: «подозреваемый», «по имеющимся данным», «действия содержат признаки преступления». Слова «виновен», «взяточник», «совершил преступление» не используются (раздел IX)."));
+
 // ------------------------------------------------------------------------ I
-add(H1("I. ОБЩИЕ ПОЛОЖЕНИЯ", { pageBreak: true }));
-add(H2("1.1. Назначение"));
-add(NL([
-  "Настоящие методические рекомендации (далее — Рекомендации) определяют порядок подготовки и проведения Управлением собственной безопасности по городу Москва (далее — УСБ-М) оперативного эксперимента по выявлению фактов получения взятки должностными лицами государственных органов и последующего задержания таких лиц с привлечением подразделений специального назначения ФСБ «Альфа» и «Вымпел».",
-  "Рекомендации обязательны для изучения руководителями мероприятий (руководство ССКБ и УСБ-М), оперативным составом УСБ-М и слушателями Академии УСБ-М, следователями ФСБ, участвующими в мероприятиях УСБ-М, командирами и бойцами приданных подразделений специального назначения.",
-  "Рекомендации составлены на основе Федерального закона «О Федеральной службе безопасности» (далее — ФЗ «О ФСБ») и Уголовного кодекса РО (далее — УК РО) с учётом практики реальных оперативных подразделений.",
-  "Положения с пометкой **(OOC)** относятся к игровому процессу: отыгровке, функционалу и правилам сервера.",
-], { labels: ["1.1.1.", "1.1.2.", "1.1.3.", "1.1.4."], left: 1134, hanging: 709 }));
-
-add(H2("1.2. Основные понятия"));
-add(T([2500, CW - 2500], ["Понятие", "Значение"], [
-  ["Оперативный эксперимент", "Оперативно-розыскное мероприятие, при котором в контролируемых условиях создаётся обстановка, позволяющая выявить и зафиксировать преступление — получение взятки (п. «в» ст. 10 ФЗ «О ФСБ»)."],
-  ["Объект", "Должностное лицо, в отношении которого проводится мероприятие. В радиоэфире называется только «Объект»: без фамилии и должности."],
-  ["Клиент (легендированный сотрудник)", "Сотрудник УСБ-М, действующий под легендой гражданского лица и передающий объекту предмет взятки на основании служебного задания (ч. 3 ст. 4.3 УК РО)."],
-  ["Предмет взятки", "Денежные средства, осмотренные, помеченные и вручённые Клиенту по протоколу (Приложение 4)."],
-  ["Руководитель мероприятия («Первый»)", "Должностное лицо ССКБ/УСБ-М, принявшее решение о проведении мероприятия. Осуществляет общее руководство, единолично подаёт команды «РЕАЛИЗАЦИЯ» и «ОТБОЙ»."],
-  ["Группа захвата (ГЗ)", "Сводная группа бойцов «Альфы» и «Вымпела», выделенная для задержания объекта. На время мероприятия находится в оперативном подчинении руководителя мероприятия."],
-  ["Следственно-оперативная группа (СОГ)", "Следователь ФСБ и оперативные сотрудники УСБ-М, выполняющие действия на месте задержания и после него."],
-  ["Реализация", "Этап задержания объекта, изъятия предмета взятки и закрепления доказательств."],
-  ["Условный сигнал", "Заранее оговорённая фраза или действие, означающие наступление определённого события (раздел V)."],
-  ["Докладчик", "Оперативный сотрудник УСБ-М, который объявляет задержанному о задержании и его правах, а на разборе зачитывает официальное сообщение."],
-], { firstBold: true }));
-
-add(H2("1.3. Принципы работы"));
-add(AL([
-  "**Законность.** У каждого действия есть норма-основание (раздел II). Нет нормы — нет действия.",
-  "**Недопустимость провокации.** Клиент не уговаривает, не давит и не настаивает. Решение взять деньги объект принимает сам.",
-  "**Фиксация.** Всё мероприятие, от вручения денег Клиенту до доставления задержанного, записывается на видео. Без записи мероприятие не проводится (ч. 3 ст. 4.3 УК РО).",
-  "**Конспирация.** Сведения о мероприятии доводятся только до его участников и только в необходимом объёме (п. «д» ст. 3 ФЗ «О ФСБ»).",
-  "**Единоначалие.** Все участники, включая приданные силы, выполняют распоряжения руководителя мероприятия. На месте задержания команды подаёт один голос.",
-  "**Выдержка.** Жёсткость допустима только до момента взятия объекта под контроль, после — корректность и официальный тон (ст. 3, 4 ФЗ «О ФСБ», ст. 1.7 УК РО).",
+add(H1("I. ОБЩИЕ ПОЛОЖЕНИЯ"));
+add(PN("Рекомендации определяют порядок подготовки и проведения Управлением собственной безопасности по городу Москва (далее — УСБ-М) оперативного эксперимента по документированию получения взятки должностным лицом государственного органа, а также порядок задержания подозреваемого с привлечением подразделений специального назначения «Альфа» и «Вымпел»."));
+add(PN("Рекомендации обязательны для изучения руководителями мероприятий, оперативным составом УСБ-М, слушателями Академии УСБ-М, следователями ФСБ, командирами и бойцами приданных подразделений специального назначения."));
+add(PN("Положения с пометкой «(OOC)» относятся к игровому процессу: отыгровке, функционалу и правилам сервера."));
+add(PN("Основные понятия:", { keepNext: true }));
+add(DASH([
+  "**оперативный эксперимент** — оперативно-розыскное мероприятие, в ходе которого в контролируемых условиях документируется передача денежных средств должностному лицу;",
+  "**объект** — должностное лицо, в отношении которого проводится мероприятие; после задержания — подозреваемый;",
+  "**Клиент** — сотрудник УСБ-М, выступающий в роли заявителя под легендой гражданского лица и действующий по служебному заданию;",
+  "**предмет передачи** — денежные средства, осмотренные, помеченные и вручённые Клиенту по акту;",
+  "**реализация** — задержание объекта, изъятие предмета передачи и закрепление результатов;",
+  "**руководитель мероприятия («Первый»)** — должностное лицо УСБ-М, назначенное постановлением руководить мероприятием;",
+  "**группа захвата (ГЗ)** — бойцы «Альфы» и «Вымпела», выделенные для задержания;",
+  "**следственно-оперативная группа (СОГ)** — следователь ФСБ и оперативные сотрудники УСБ-М, работающие на месте после задержания;",
+  "**докладчик** — оперативный сотрудник, который объявляет задержанному о задержании и правах, а на разборе зачитывает официальное сообщение.",
 ]));
-add(SP(60));
-add(NOTE("ПРО АВТОРИТЕТ УСБ-М", [
-  "Авторитет УСБ-М держится не на крике и численности, а на безупречности. Каждое задержание должно выдерживать проверку прокурора, адвоката и руководства задержанного. Нас должны бояться нарушители и уважать честные сотрудники. Тот, кто отказался от взятки, уходит с проверки с уважением к УСБ-М. Тот, кто взял, — с пониманием, что ответственность неотвратима.",
-], "info"));
+add(PN("Принципы работы:", { keepNext: true }));
+add(SUB([
+  "**законность** — у каждого действия есть основание в законе;",
+  "**презумпция невиновности** — мы подозреваем и документируем, решение принимает прокуратура;",
+  "**недопустимость провокации** — инициатива получения денег исходит только от объекта, роль Клиента пассивная;",
+  "**фиксация** — вся работа, от вручения денег Клиенту до доставления задержанного, записывается на видео;",
+  "**конспирация** — о мероприятии знают только его участники и только в необходимом объёме;",
+  "**единоначалие** — все участники подчиняются руководителю мероприятия, на месте задержания команды подаёт один голос;",
+  "**выдержка** — жёсткость допустима только до взятия объекта под контроль, дальше — корректность и официальный тон.",
+], { letters: true }));
+add(PN("Авторитет УСБ-М держится на безупречности, а не на крике и численности. Каждое задержание должно выдерживать проверку прокурора, адвоката и руководства задержанного."));
 
 // ------------------------------------------------------------------------ II
-add(H1("II. ПРАВОВАЯ ОСНОВА"));
-add(P("Каждый участник мероприятия должен знать, на какой норме основано его действие. На разборе и при обжаловании (ст. 4 ФЗ «О ФСБ») ссылка на норму — первый ответ на любой вопрос."));
-add(H2("2.1. Федеральный закон «О Федеральной службе безопасности»"));
-add(T([1700, 3800, CW - 5500], ["Норма", "Содержание", "Применение в мероприятии"], [
-  ["ст. 5 ч. 1 п. «б», ст. 7 ч. 1", "Борьба с преступностью, в том числе с коррупцией и должностными преступлениями", "Компетенция УСБ-М на проведение мероприятия"],
-  ["ст. 9 п. «в»", "Обязанность выявлять и предотвращать преступления путём оперативно-розыскных и следственных действий, осуществлять розыск и задержание лиц", "Основание мероприятия и задержания"],
-  ["ст. 10 п. «в»", "Право проводить оперативно-розыскные мероприятия по выявлению коррупции", "Оперативный эксперимент"],
-  ["ст. 10 п. «д», ст. 11 ч. 1", "Использование подразделений специального назначения; право командиров отдавать приказы о применении оружия, спецсредств и физической силы", "Привлечение «Альфы» и «Вымпела», их подчинение руководителю мероприятия"],
-  ["ст. 10 п. «ж»", "Дознание и предварительное следствие", "Возбуждение уголовного дела следователем ФСБ"],
-  ["ст. 10 п. «и», ст. 12 ч. 3", "Беспрепятственный вход в помещения, где совершается преступление; проникновение для задержания подозреваемого", "Задержание в здании ведомства, в помещениях"],
-  ["ст. 10 п. «к», «л»", "Оцепление (блокирование) участков местности, ограничение передвижения граждан и транспорта", "Работа подгруппы блокирования"],
-  ["ст. 10 п. «м»", "Проверка документов, личный досмотр, досмотр вещей и транспорта", "Установление личности, досмотр, изъятие предмета взятки"],
-  ["ст. 10 п. «н», «р»", "Получение информации от государственных органов; запрос помощи при специальных операциях обязателен к исполнению", "Работа через руководство объекта: установить, где он, и вызвать его"],
-  ["ст. 10 п. «о»", "Вызов лиц для допроса, получение объяснений", "Опрос объекта, свидетелей, руководства"],
-  ["ст. 10 п. «т»", "Фото-, видео- и аудиозапись", "Фиксация всего мероприятия"],
-  ["ст. 10 п. «у», «ф»", "Государственный надзор за органами власти; беспрепятственный проход сотрудника УСБ-М по удостоверению и истребование сведений", "Проход на территорию ведомства объекта, запрос документов"],
-  ["ст. 13 ч. 1 п. «г», «д»; ч. 3", "Применение оружия для задержания лица, застигнутого при совершении тяжкого преступления против государственной власти и пытающегося скрыться, а также при вооружённом сопротивлении; запрет при скоплении людей", "Пределы применения оружия ГЗ"],
-  ["ст. 14 ч. 1 п. «в», «г», «д»", "Специальные средства для пресечения сопротивления, задержания застигнутого лица и лица, которое может оказать вооружённое сопротивление", "Наручники"],
-  ["ст. 15 ч. 1 п. «б», «в»", "Физическая сила для задержания и доставления, преодоления противодействия", "Укладывание «лицом в пол», загиб руки"],
-  ["ст. 9 п. «а», ст. 18", "Информирование Генерального прокурора; прокурорский надзор", "Уведомление прокурора, его участие в разборе"],
-  ["ст. 4", "Соблюдение прав и свобод, право обжалования", "Корректность, разъяснение прав задержанному"],
-], { firstBold: true, size: 21 }));
-
-add(H2("2.2. Уголовный кодекс РО"));
-add(T([1250, 3350, 1350, CW - 5950], ["Статья", "Состав и санкция", "Категория (ст. 2.2)", "Значение для мероприятия"], [
-  ["15.4", "Получение взятки: штраф 50 000–100 000 руб. либо лишение свободы до 40 мес.", "тяжкое", "Основная квалификация действий объекта"],
-  ["15.5", "Дача взятки: штраф до 70 000 руб. либо лишение свободы до 30 мес.", "средней тяжести", "Реальный взяткодатель или посредник. К Клиенту не применяется при соблюдении ч. 3 ст. 4.3"],
-  ["ч. 3 ст. 4.3", "Сотрудники УСБ-М не отвечают за действия, формально подпадающие под ст. 10.3, 12.8, 17.6, 15.5, если они совершены в рамках операции по выявлению коррупционных правонарушений при наличии служебного задания и фиксации", "—", "**Главное условие законности работы Клиента**"],
-  ["15.1; 15.1.1", "Превышение (до 50 мес.); злоупотребление должностными полномочиями (до 40 мес., ч. 2 — до 50 мес.)", "особо тяжкое; тяжкое", "Дополнительная квалификация, если за взятку совершены незаконные действия"],
-  ["15.6", "Халатность (до 40 мес., ч. 2 — до 50 мес.)", "тяжкое", "Руководители, допустившие систему поборов"],
-  ["3.1; 3.2; 5.11", "Неоконченное преступление: приготовление и покушение; наказание за покушение — не более 3/4 максимума", "—", "Задержание до фактической передачи денег даёт лишь покушение"],
-  ["4.2", "Причинение вреда при задержании лица, совершившего преступление", "—", "Защищает бойцов ГЗ при соразмерных действиях; превышение мер наказуемо"],
-  ["4.5", "Исполнение приказа или распоряжения", "—", "Законный приказ исполняется, заведомо незаконный — нет"],
-  ["17.6", "Неповиновение законному требованию (до 30 мес.)", "средней тяжести", "Невыполнение команд ГЗ и законных требований"],
-  ["17.8", "Помеха задержанию (ч. 1 — до 40 мес.); помеха со стороны сотрудника госструктур (ч. 2 — до 50 мес.)", "тяжкое; особо тяжкое", "Коллеги объекта, мешающие задержанию"],
-  ["16.2", "Вмешательство в деятельность следователя (ч. 2 — до 30 мес.); с использованием служебного положения (ч. 3 — до 50 мес.)", "средней тяжести; особо тяжкое", "Давление руководства объекта на следствие"],
-  ["17.1; 17.2", "Посягательство на жизнь сотрудника; насилие в отношении представителя власти", "особо тяжкое; средней тяжести", "Сопротивление при задержании"],
-  ["14.1", "Разглашение государственной тайны (до 30 мес.)", "средней тяжести", "Утечка сведений о мероприятии"],
-  ["16.4; 16.5; 16.6", "Привлечение заведомо невиновного; незаконное задержание; принуждение к даче показаний", "тяжкие (ч. 2 ст. 16.4 — особо тяжкое)", "**Чего не допускать нашим сотрудникам**"],
-  ["9.2", "Воспрепятствование законной деятельности адвоката (до 40 мес.)", "тяжкое", "Адвокату задержанного не препятствовать"],
-  ["5.16; 5.17", "Судимость; выход под залог", "—", "При аресте по ст. 15.4 — запись о судимости, в залоге отказывается"],
-], { firstBold: true, size: 21 }));
-
-add(H2("2.3. Выводы для практики"));
-add(BL([
-  "**Получение взятки (ст. 15.4) — тяжкое преступление против государственной власти** (ч. 4 ст. 2.2, раздел VII УК РО). Отсюда три следствия: объект, застигнутый при получении взятки и пытающийся скрыться, может быть задержан с применением оружия, если иначе задержать его невозможно (п. «г», «д» ч. 1 ст. 13 ФЗ «О ФСБ»); при аресте создаётся запись о судимости (ч. 3 ст. 5.16); в выходе под залог отказывается (п. «д» ч. 3 ст. 5.17).",
-  "**Клиент защищён ч. 3 ст. 4.3 УК РО только при трёх условиях сразу:** идёт операция по выявлению коррупционных правонарушений, есть письменное служебное задание, происходящее фиксируется. Если нет хотя бы одного условия, Клиент сам становится взяткодателем (ст. 15.5).",
-  "**Штраф или лишение свободы назначает ФСБ** (ч. 1 ст. 5.3). Увольнение со службы с лишением званий и запрет занимать должности назначает только суд (ч. 3 ст. 5.3, ч. 3 ст. 5.2). Поэтому наказание по итогам разбора назначаем сами, а вопрос об увольнении решает руководство объекта в дисциплинарном порядке либо суд по нашим материалам.",
-  "**Оружие в готовности не даёт права стрелять.** Обнажать оружие и держать его в готовности можно, когда в обстановке могут возникнуть основания для применения: объект вооружён, преступление тяжкое. Стрелять — только по основаниям ст. 13 ФЗ «О ФСБ».",
-  "**Незаконное задержание, принуждение к показаниям, привлечение невиновного — преступления** (ст. 16.4–16.6 УК РО). Лучшая защита от встречных жалоб — видеозапись и письменные документы.",
+add(H1("II. КАК ЭТО ДЕЛАЕТ ФСБ РОССИИ"));
+add(P("Раздел описывает реальный порядок документирования взяток, на котором построены эти рекомендации. Нормативные акты перечислены в списке источников."));
+add(PN("**Основание.** Оперативный эксперимент проводится только при наличии информации о преступлении: заявления гражданина о вымогательстве или оперативных сведений. Оперативник докладывает о них рапортом."));
+add(PN("**Постановление.** Оперативный эксперимент проводится на основании постановления, утверждённого руководителем органа, и только по преступлениям средней тяжести, тяжким и особо тяжким (ст. 8 Федерального закона «Об оперативно-розыскной деятельности»)."));
+add(PN("**Подготовка заявителя.** Перед встречей заявителя досматривают: фиксируют, что других денег у него нет. Деньги осматривают, переписывают номера купюр, помечают и вручают заявителю по акту. Этим же актом вручают аппаратуру негласной аудио- и видеозаписи, как правило с дублированием."));
+add(PN("**Пометка денег.** Применяются специальные химические вещества. Например, «Тушь-7», разработанная Институтом криминалистики ФСБ: следы на купюрах и руках видны в ультрафиолете после обработки проявителем. На купюрах также пишут «ВЗЯТКА» маркером, видимым только в ультрафиолете. Если настоящих денег не хватает, собирают «куклу» — пачку муляжей, снаружи прикрытую настоящими купюрами."));
+add(PN("**Запрет провокации.** Склонять должностное лицо к получению взятки запрещено (ст. 5 Федерального закона «Об оперативно-розыскной деятельности»). Роль заявителя преимущественно пассивная. Провокации нет, если умысел на получение взятки сформировался у должностного лица независимо от действий оперативников (постановление Пленума Верховного Суда РФ от 09.07.2013 № 24)."));
+add(PN("**Передача и задержание.** Встреча проходит под записью и наблюдением. Сразу после передачи — задержание, изъятие денег, смывы с рук и проверка ультрафиолетом. Передача взятки в ходе оперативно-розыскного мероприятия считается оконченным преступлением, даже если деньги изъяты сразу (то же постановление Пленума)."));
+add(PN("**Оформление.** Ход мероприятия отражается в акте оперативного эксперимента, к нему прилагаются записи и стенограммы разговоров. Протокол задержания подозреваемого составляется не позднее 3 часов после доставления: в нём отмечается разъяснение прав, указываются основания и мотивы задержания, результаты личного обыска. Прокурор уведомляется письменно в течение 12 часов (ст. 91, 92 УПК РФ)."));
+add(PN("**Передача материалов.** Результаты оперативно-розыскной деятельности представляются следователю на основании постановления руководителя органа — по межведомственной Инструкции, утверждённой приказом МВД России, ФСБ России и других ведомств от 27.09.2013 № 776/703/509/507/1820/42/535/398/68. Решение о возбуждении уголовного дела принимает не оперативник."));
+add(PN("**Официальное сообщение.** Центр общественных связей ФСБ сообщает о задержании в формулировках подозрения: «задержан по подозрению в получении взятки», «по имеющимся данным»."));
+add(PN("Соответствие реальных документов документам УСБ-М:", { keepNext: true }));
+add(T([4300, 3700, CW - 8000], ["Реальная практика", "УСБ-М", "Прил."], [
+  ["Рапорт о полученной информации (ст. 143 УПК РФ)", "Рапорт", "2"],
+  ["Постановление о проведении оперативного эксперимента, утверждённое руководителем органа", "Постановление с грифом «УТВЕРЖДАЮ» руководителя ССКБ", "3"],
+  ["Задание лицу, участвующему в оперативном эксперименте", "Служебное задание Клиенту", "4"],
+  ["Акт личного досмотра, осмотра, пометки и вручения денежных и технических средств", "Акт досмотра, пометки и вручения", "5"],
+  ["Акт оперативного эксперимента со стенограммами записей", "Акт оперативного эксперимента", "6"],
+  ["Протокол задержания подозреваемого (ст. 92 УПК РФ)", "Протокол задержания", "7"],
+  ["Постановление о представлении результатов ОРД и сопроводительное письмо (Инструкция 2013 г.)", "Постановление о представлении результатов в прокуратуру", "8"],
+  ["Сообщение Центра общественных связей ФСБ", "Информационное сообщение", "10"],
+], { center: [2] }));
+add(SP());
+add(PN("Отличия от реальной практики, продиктованные законодательством РО:", { keepNext: true }));
+add(DASH([
+  "материалы направляются не следователю Следственного комитета, а в прокуратуру, которая и принимает решение;",
+  "участие сотрудника УСБ-М в передаче денег прямо защищено ч. 3 ст. 4.3 УК РО; в реальном законе такой нормы нет, но правило пассивной роли Клиента соблюдается и у нас.",
 ]));
 
 // ------------------------------------------------------------------------ III
-add(H1("III. СИЛЫ, СРЕДСТВА И РАСПРЕДЕЛЕНИЕ РОЛЕЙ"));
-add(H2("3.1. Участники мероприятия"));
-add(T([2350, 2250, CW - 4600], ["Роль (позывной)", "Кто назначается", "Задачи"], [
-  ["Руководитель мероприятия («Первый»)", "Руководитель ССКБ или его заместитель", "Решение о проведении, план, команды «РЕАЛИЗАЦИЯ» и «ОТБОЙ», связь с руководством объекта и прокурором, итоговый рапорт"],
-  ["Старший оперативной группы («Второй»)", "Оперуполномоченный УСБ-М", "Документы, инструктаж Клиента, пометка денег, контроль контакта; руководит СОГ на месте до прибытия следователя"],
-  ["Клиент («Клиент»)", "Сотрудник УСБ-М в гражданской одежде", "Действует по служебному заданию, передаёт предмет взятки, ведёт запись, подаёт условную фразу"],
-  ["Наблюдение и видеозапись («Сокол», «Камера»)", "1–2 оперативника или слушатели Академии", "Запись со второго ракурса, доклады о перемещениях объекта; на задержании — видеооператор"],
-  ["Командир ГЗ («Гром»)", "Старший из бойцов «Альфы» / «Вымпела»", "Тактика захвата, распределение по подгруппам; на месте — единственный голос команд до доклада «под контролем»"],
-  ["Группа захвата («Гром-1…4»)", "Бойцы «Альфы» и «Вымпела», 5–20 чел.", "Блокирование, захват, прикрытие, конвоирование (п. 3.2)"],
-  ["Следователь («Юрист»)", "Следователь ФСБ", "Досмотр и изъятие, протоколы, фабула подозрения, возбуждение уголовного дела, решение о наказании"],
-  ["Докладчик", "Оперуполномоченный УСБ-М (в т.ч. слушатель под контролем наставника)", "Установление личности, объявление о задержании и правах, зачитка официального сообщения на разборе"],
-], { firstBold: true }));
-
-add(H2("3.2. Группа захвата: распределение 20 бойцов"));
-add(T([2300, 1250, CW - 3550], ["Подгруппа (позывной)", "Бойцов", "Задачи"], [
-  ["Командир ГЗ («Гром»)", "1", "Управление, команды голосом, доклады Первому"],
-  ["Захват («Гром-1»)", "4", "№ 1 — загиб руки, наручники, контроль рук до передачи следователю;\n№ 2 — изъятие табельного оружия объекта;\n№ 3 — укладывание вместе с № 1, поверхностный досмотр на оружие;\n№ 4 — укладывает Клиента (чтобы не раскрыть его), затем контролирует обстановку у точки"],
-  ["Прикрытие («Гром-2»)", "4", "Оружие с тактическими фонарями в готовности, контроль рук объекта и окружающих, пресечение вооружённого сопротивления; в помещение входят первыми"],
-  ["Блокирование («Гром-3»)", "6", "Перекрывают входы и выходы, блокируют транспорт объекта, отсекают коллег объекта и посторонних, предупреждают об ответственности по ст. 17.8 УК РО"],
-  ["Конвой («Гром-4»)", "3", "Принимают задержанного у захвата, ведут в бус, охраняют в пути и в здании ФСБ"],
-  ["Водители", "2", "Скрытое ожидание, выдвижение по команде, блокирование транспорта объекта спереди и сзади, эвакуация"],
-  ["Итого", "20", ""],
-], { firstBold: true, center: [1] }));
-add(SP(60));
-add(P("Если бойцов меньше 20, подгруппы сокращаются в следующем порядке (конвой при этом выполняет захват):", { keepNext: true }));
-add(T([1450, 1350, 1100, 1450, 1750, CW - 7100], ["Состав ГЗ", "Командир", "Захват", "Прикрытие", "Блокирование", "Конвой / водители"], [
-  ["5 бойцов", "1*", "2", "1", "—", "1 водитель"],
-  ["10 бойцов", "1", "3", "2", "3", "1 водитель"],
-  ["20 бойцов", "1", "4", "4", "6", "3 конвой + 2 водителя"],
-], { firstBold: true, center: [1, 2, 3, 4, 5] }));
-add(P("* При составе в 5 бойцов командир одновременно выполняет задачи прикрытия.", { size: 20, italics: true, noIndent: true, before: 60 }));
-
-add(H2("3.3. Подчинение приданных сил"));
-add(BL([
-  "На время мероприятия бойцы «Альфы» и «Вымпела» поступают в **полное оперативное подчинение** руководителю мероприятия (п. «д» ст. 10, ч. 1 ст. 11 ФЗ «О ФСБ»; п. 4 постановления — Приложение 2).",
-  "Оперативное подчинение означает: руководитель мероприятия определяет **что** делать (объект, место, время, сигнал к началу, отбой), командир ГЗ определяет **как** (расстановка, способ захвата). Руководитель не командует отдельными бойцами через голову командира ГЗ.",
-  "Подчинение действует с начала инструктажа до команды «ОТБОЙ» или доклада о доставлении задержанного в здание ФСБ.",
-  "Бойцы приданных сил не вступают в переговоры с руководством объекта и не дают комментариев. Все вопросы переадресуются руководителю мероприятия.",
+add(H1("III. ПРАВОВЫЕ ОСНОВАНИЯ"));
+add(PN("Федеральный закон «О Федеральной службе безопасности»:", { keepNext: true }));
+add(DASH([
+  "борьба с коррупцией и должностными преступлениями — ст. 5, 7;",
+  "обязанность выявлять преступления, проводить оперативно-розыскные мероприятия, задерживать лиц — п. «в» ст. 9;",
+  "право проводить оперативно-розыскные мероприятия по выявлению коррупции — п. «в» ст. 10;",
+  "использование подразделений специального назначения — п. «д» ст. 10, ч. 1 ст. 11;",
+  "фото-, видео- и аудиозапись — п. «т» ст. 10;",
+  "проверка документов и личный досмотр — п. «м» ст. 10;",
+  "оцепление, ограничение передвижения, вход в помещения — п. «и», «к», «л» ст. 10, ст. 12;",
+  "получение сведений от государственных органов, обязательное содействие при специальных операциях — п. «н», «р» ст. 10;",
+  "надзор за органами власти, проход сотрудника УСБ-М по удостоверению и истребование сведений — п. «у», «ф» ст. 10;",
+  "применение оружия, специальных средств, физической силы — ст. 13, 14, 15;",
+  "информирование прокурора, прокурорский надзор — п. «а» ст. 9, ст. 18.",
 ]));
-
-add(H2("3.4. Экипировка, транспорт, связь"));
-add(BL([
-  "**ГЗ:** полная боевая экипировка — бронежилет, шлем и балаклава (если допускаются правилами фракции), табельное оружие с тактическим фонарём, наручники, рация. Форма единообразная: на видео ГЗ должна выглядеть как одно подразделение.",
-  "**Тактические фонари** включаются по команде командира ГЗ при работе в помещении и в тёмное время суток. Светить в лицо объекту и в сторону угрозы, не в лица своих.",
-  "**Оперативный состав:** гражданская одежда или форма по решению руководителя; служебное удостоверение при себе обязательно (п. «ф» ст. 10 ФЗ «О ФСБ»).",
-  "**Клиент:** гражданская одежда, без символики ФСБ; оружие и удостоверение — по решению руководителя (лучше оставить в бусе); при себе только помеченные деньги.",
-  "**Транспорт:** микроавтобусы без проблесковых маячков на этапе ожидания; стоят вне прямой видимости объекта; водители не покидают машины.",
-  "**Связь:** отдельный канал мероприятия. Номер канала доводится на инструктаже и в общих каналах не называется.",
+add(PN("Уголовный кодекс РО:", { keepNext: true }));
+add(DASH([
+  "ст. 15.4 «Получение взятки» — тяжкое преступление (до 40 месяцев лишения свободы); по её признакам проводится задержание;",
+  "ст. 15.5 «Дача взятки»; ст. 15.1 и 15.1.1 — превышение и злоупотребление должностными полномочиями;",
+  "ч. 3 ст. 4.3 — сотрудник УСБ-М не несёт ответственности за передачу денег в рамках операции по выявлению коррупционных правонарушений при наличии служебного задания и фиксации;",
+  "ст. 4.2 — причинение вреда при задержании; ст. 4.5 — исполнение приказа;",
+  "ст. 17.6 и 17.8 — неповиновение и помеха задержанию, в том числе сотрудником государственных структур (ч. 2 ст. 17.8);",
+  "ст. 16.2 — вмешательство в деятельность следователя; ст. 14.1 — разглашение государственной тайны;",
+  "ст. 16.4, 16.5, 16.6, 9.2 — чего не должны допускать мы: привлечение невиновного, незаконное задержание, принуждение к показаниям, препятствие работе адвоката.",
+]));
+add(PN("Выводы для практики:", { keepNext: true }));
+add(SUB([
+  "Получение взятки — тяжкое преступление против государственной власти. Объект, застигнутый при получении денег и пытающийся скрыться, может быть задержан с применением оружия, если иначе задержать невозможно (п. «г», «д» ч. 1 ст. 13 ФЗ «О ФСБ»).",
+  "Клиент защищён ч. 3 ст. 4.3 УК РО, только если есть и служебное задание, и видеозапись. Без них он сам становится взяткодателем.",
+  "Оружие в готовности не даёт права стрелять. Стрелять можно только по основаниям ст. 13 ФЗ «О ФСБ».",
+  "Решение о наказании принимаем не мы. В наших документах — только факты и подозрение.",
 ]));
 
 // ------------------------------------------------------------------------ IV
-add(H1("IV. ПОДГОТОВКА И ПРОВЕДЕНИЕ ОПЕРАТИВНОГО ЭКСПЕРИМЕНТА", { pageBreak: true }));
-add(H2("4.1. Этапы мероприятия"));
-add(T([500, 3000, 2350, CW - 5850], ["№", "Этап", "Ответственный", "Результат"], [
-  ["1", "Основания и документы", "Старший оперативной группы", "Рапорт, постановление, служебное задание"],
-  ["2", "Сбор, инструктаж, пометка денег", "Руководитель мероприятия", "Роли распределены, связь проверена, деньги помечены"],
-  ["3", "Контакт и передача", "Клиент, наблюдение", "Передача зафиксирована, подан сигнал"],
-  ["4", "Реализация (задержание)", "Командир ГЗ", "Объект задержан и под контролем"],
-  ["5", "Установление личности, объявление о задержании, права", "Докладчик", "Личность установлена, права разъяснены под запись"],
-  ["6", "Досмотр, изъятие, доставление", "Следователь, конвой", "Предмет взятки изъят, задержанный в здании ФСБ"],
-  ["7", "Разбор с руководством объекта и прокурором", "Руководитель мероприятия, следователь, докладчик", "Официальное сообщение, решение по делу"],
-  ["8", "Документирование и отчёт", "Старший оперативной группы", "Итоговый рапорт, публикация сообщения"],
-], { center: [0] }));
-
-add(H2("4.2. Основания и документы"));
-add(P("Мероприятие проводится при наличии одного из оснований:", { keepNext: true }));
-add(AL([
-  "заявление гражданина о вымогательстве взятки должностным лицом;",
-  "оперативная информация о коррупционной деятельности конкретного должностного лица (жалобы, обращения, материалы проверок);",
-  "плановая проверка сотрудников ведомства на устойчивость к коррупции по решению руководителя ССКБ (п. «у» ст. 10 ФЗ «О ФСБ»).",
-]));
-add(P("До выхода на контакт оформляются: рапорт (Приложение 1), постановление о проведении мероприятия (Приложение 2), служебное задание Клиенту (Приложение 3), протокол пометки денежных средств (Приложение 4)."));
-add(NOTE("ЖЁСТКОЕ ПРАВИЛО", ["Без служебного задания и включённой видеозаписи Клиент на контакт не выходит. Никаких исключений: без них Клиент — обычный взяткодатель (ст. 15.5 УК РО)."]));
-
-add(H2("4.3. Сбор и инструктаж"));
-add(NL([
-  "Сбор личного состава в здании ФСБ (г. Москва, ул. Большая Лубянка, д. 27). Командир ГЗ докладывает о численности и готовности.",
-  "Доведение задачи: объект (ведомство, приметы, транспорт), вариант реализации, место и время, условные сигналы, канал связи, позывные.",
-  "Распределение ролей и подгрупп, назначение видеооператоров (не менее двух ракурсов).",
-  "Проверка экипировки, оружия, фонарей, наручников, раций. Проверка связи: каждый позывной отвечает в канал.",
-  "Осмотр, пометка и вручение денег Клиенту под видеозапись (п. 4.4).",
-  "Предупреждение о неразглашении (ст. 14.1 УК РО).",
-  "Проверка понимания: командир ГЗ и Клиент повторяют сигналы вслух.",
-  "Выдвижение на исходные позиции по команде руководителя.",
-]));
-add(SP(60));
-add(SCRIPT("Инструктаж — говорит руководитель мероприятия", [
-  "«Товарищи офицеры! Проводится оперативно-розыскное мероприятие „оперативный эксперимент“ в отношении должностного лица [[ведомство]]. Основание — постановление от [[дата]] № [[номер]].",
-  "Руководитель мероприятия — [[звание, фамилия]]. С этой минуты приданные силы „Альфы“ и „Вымпела“ находятся в моём оперативном подчинении. Командир группы захвата — [[фамилия]].",
-  "Работаем на канале [[номер]]. Условные сигналы: передача состоялась — „ПОДАРОК ВРУЧЁН“; задержание — „РЕАЛИЗАЦИЯ“; отмена — „ОТБОЙ“. „Реализацию“ и „Отбой“ подаю только я.",
-  "На задержании команды голосом подаёт только командир группы захвата. Первая команда — „РАБОТАЕТ ФСБ!“. Оружие — в готовности. Применять оружие — только при вооружённом сопротивлении или при попытке скрыться, если иначе задержать невозможно. Удары, мат, оскорбления запрещены.",
-  "Мероприятие фиксируется на видео от начала до конца. Сведения о мероприятии составляют государственную тайну и разглашению не подлежат. Вопросы? Командирам подгрупп — доложить о готовности.»",
-]));
-add(SP(60));
-add(DIALOG([
-  ["Командир ГЗ", "«Гром понял. Сигнал на захват — „Реализация“, первая команда — „Работает ФСБ“, оружие — только по статье 13. Группа к работе готова.»"],
-  ["Клиент", "«Клиент понял. Запись включена. Условная фраза после передачи — „Спасибо, выручили“. Опасность — „Мне срочно нужно позвонить“.»"],
-]));
-
-add(H2("4.4. Осмотр и пометка денежных средств"));
-add(P("Деньги для передачи осматривает и помечает старший оперативной группы под видеозапись. Результат оформляется протоколом (Приложение 4). В реальной практике купюры обрабатывают специальным химическим веществом (люминесцентным порошком) и подписывают специальным карандашом. Надпись «ВЗЯТКА» и порошок видны только в ультрафиолете, а на руках взявшего остаются следы свечения."));
-add(RP("(OOC) Отыгровка пометки денег", [
-  "/me разложил денежные купюры на столе перед камерой",
-  "/me переписал серии и номера купюр в протокол",
-  "/me обработал купюры специальным люминесцентным порошком",
-  "/me специальным карандашом нанёс на каждую купюру надпись «ВЗЯТКА»",
-  "/do При обычном освещении надпись и порошок не видны.",
-  "/me включил ультрафиолетовый фонарь и проверил купюры",
-  "/do В ультрафиолете видны надпись «ВЗЯТКА» и свечение порошка.",
-  "/me упаковал образец порошка в конверт и опечатал его",
-  "/me передал купюры сотруднику «Клиент» под роспись в протоколе",
-]));
-add(P("(OOC) Сама сумма передаётся игровым способом. Пометка — это отыгровка, которую закрепляют протокол и видеозапись.", { size: 21, italics: true, before: 80 }));
-
-add(H2("4.5. Контакт и передача: правила для Клиента"));
-add(NL([
-  "Запись включается до выхода на контакт и не прерывается до передачи задержанного следователю. Никакого монтажа: непрерывная запись — главный ответ на обвинение в провокации.",
-  "Клиент действует строго в пределах служебного задания.",
-  "Запрещено: уговаривать, настаивать, повторять предложение после отказа, давить на жалость, угрожать, ссылаться на знакомство с руководством объекта.",
-  "Сигнал подаётся только после того, как объект **взял** деньги (хотя бы часть). Согласие без передачи — ещё не получение взятки: реализация в этот момент даёт лишь покушение (ст. 3.1, 3.2 УК РО) и спор о провокации.",
-  "После передачи Клиент ведёт себя естественно: благодарит, прощается условной фразой, отходит на несколько шагов. При выходе ГЗ выполняет команды наравне со всеми.",
-]));
-add(SP(60));
-add(T([2000, 2300, 3100, CW - 7400], ["Тактика", "Когда применяется", "Как действует Клиент", "Сила доказательств"], [
-  ["«Заявитель»", "Есть сведения о вымогательстве: объект сам требует деньги", "Создаёт повод и задаёт нейтральные вопросы: «Что мне теперь будет?», «Как можно решить вопрос?». Сумму и условия называет объект", "Максимальная: инициатива объекта очевидна"],
-  ["«Проверка на устойчивость»", "Плановая проверка сотрудников поднадзорного ведомства", "Один раз предлагает: «Может, решим вопрос на месте?». При отказе не настаивает и подчиняется законным требованиям объекта", "Достаточная при соблюдении ч. 3 ст. 4.3: объект мог отказаться и доложить руководству"],
-], { firstBold: true }));
-add(SP(80));
-add(NOTE("ЗАПИСЬ ДОЛЖНА ОТВЕТИТЬ НА ТРИ ВОПРОСА (элементы ст. 15.4 УК РО)", [
-  "– **КТО получил** — должностное лицо: видны форма, нагрудный знак, лицо, служебный транспорт.",
-  "– **ЧТО получено** — сумма, названная вслух или видимая при передаче.",
-  "– **ЗА ЧТО** — действие или бездействие по службе: «не буду оформлять», «отпущу», «закрою глаза», «сделаю документ».",
-  "Если хотя бы на один вопрос нет ответа, реализацию лучше отложить и доработать эпизод.",
-], "info"));
-add(SP(60));
-add(T([3100, CW - 3100], ["Условная фраза Клиента", "Значение"], [
-  ["«Спасибо, выручили!» (сотруднику ДПС или полиции естественнее: «Спасибо, командир, выручил!»)", "Передача состоялась — дублирует доклад «Сокола» «ПОДАРОК ВРУЧЁН»"],
-  ["«Мне срочно нужно позвонить»", "Клиент раскрыт или ему угрожает опасность — решение принимает Первый"],
+add(H1("IV. СИЛЫ, СРЕДСТВА И СВЯЗЬ"));
+add(H2("Участники мероприятия"));
+add(PN("Состав участников и их задачи:", { keepNext: true }));
+add(T([3100, CW - 3100], ["Роль (позывной)", "Задачи"], [
+  ["Руководитель мероприятия («Первый»)", "Руководит мероприятием, единолично подаёт команды «РЕАЛИЗАЦИЯ» и «ОТБОЙ», взаимодействует с руководством объекта и прокурором"],
+  ["Старший оперативной группы («Второй»)", "Готовит документы, инструктирует Клиента, досматривает его и помечает деньги, составляет акт оперативного эксперимента"],
+  ["Клиент", "Действует по служебному заданию в роли заявителя, передаёт деньги, ведёт запись, подаёт условную фразу"],
+  ["Наблюдение («Сокол»), видеооператор («Камера»)", "Скрытое наблюдение и запись со второго ракурса; на задержании — видеозапись"],
+  ["Командир ГЗ («Гром»)", "Тактика захвата; на месте — единственный голос команд до доклада «объект под контролем»"],
+  ["Группа захвата («Гром-1…4»)", "Блокирование, захват, прикрытие, конвоирование"],
+  ["Следователь («Юрист»)", "Протокол задержания, личный обыск и изъятие, представление материалов в прокуратуру"],
+  ["Докладчик", "Установление личности, объявление о задержании и правах, зачитка официального сообщения"],
 ], { firstBold: true }));
 
-add(H2("4.6. Варианты реализации"));
-add(T([1900, 3700, CW - 5600], ["", "Вариант «А» — с поличным", "Вариант «Б» — отложенная реализация"], [
-  ["Когда", "Место и время встречи известны заранее (объект сам назначил встречу, вымогает у заявителя)", "Передача произошла в непредсказуемом месте (например, при остановке транспорта Клиента патрулём). Основной вариант для проверок на устойчивость"],
-  ["Где ГЗ", "Заранее скрытно на позициях в 50–150 м, бусы — за углом или во дворе", "Собирается по тревоге после передачи, задерживает объект в месте, куда его вызвало руководство"],
-  ["Плюсы", "Деньги при объекте, следы порошка на руках, объект не успевает придумать версию. Самый сильный вариант", "Контролируемое место, содействие руководства ведомства, нет риска для посторонних"],
-  ["Риски", "Нужна длительная скрытная готовность ГЗ", "Объект может избавиться от денег; руководство может предупредить объекта; время работает против нас"],
-], { firstBold: true }));
-add(SP(60));
-add(P("**Порядок отложенной реализации (вариант «Б»):**", { noIndent: true, keepNext: true }));
-add(NL([
-  "Клиент и «Сокол» фиксируют передачу и запоминают приметы объекта: нагрудный знак, фамилию на форме, бортовой номер машины, направление движения.",
-  "Первый объявляет сбор ГЗ по тревоге: сбор — не более 15 минут, полная экипировка, краткий инструктаж по п. 4.3.",
-  "«Сокол» по возможности ведёт объект и докладывает, где он.",
-  "Первый или уполномоченный опер УСБ-М связывается с руководителем ведомства объекта и предъявляет удостоверение (п. «ф» ст. 10 ФЗ «О ФСБ»). Запрашивает сведения об объекте: ФИО по нагрудному знаку, где он находится, график смены (п. «н», «р» ст. 10). Просит вызвать объекта в определённое место под служебным предлогом (построение, кабинет начальника, стоянка).",
-  "Руководителю ведомства сообщается минимум: «Проводится мероприятие УСБ-М, требуется ваше содействие». Подробности — только после задержания. Разъяснить ответственность за утечку (ст. 14.1, ч. 3 ст. 16.2, ч. 2 ст. 17.8 УК РО).",
-  "Захват проводится в месте вызова по команде «РЕАЛИЗАЦИЯ» (раздел VI).",
-  "Время между передачей и захватом должно быть минимальным: чем быстрее, тем меньше у объекта версий и возможностей избавиться от денег.",
-]));
-add(P("(OOC) Если объект уходит из игры, чтобы избежать задержания, сохраните запись и действуйте по правилам сервера (жалоба администрации).", { size: 21, italics: true, before: 60 }));
+add(H2("Группа захвата: 20 бойцов"));
+add(PN("Распределение группы захвата:", { keepNext: true }));
+add(T([2700, 1100, CW - 3800], ["Подгруппа (позывной)", "Бойцов", "Задачи"], [
+  ["Командир ГЗ («Гром»)", "1", "Управление, команды голосом, доклады Первому"],
+  ["Захват («Гром-1»)", "4", "№ 1 — загиб руки и наручники;\n№ 2 — изъятие табельного оружия объекта;\n№ 3 — укладывание вместе с № 1, проверка на оружие;\n№ 4 — укладывает Клиента, затем контролирует обстановку"],
+  ["Прикрытие («Гром-2»)", "4", "Оружие с фонарями в готовности, контроль рук объекта и окружающих; в помещение входят первыми"],
+  ["Блокирование («Гром-3»)", "6", "Перекрывают входы и выходы, блокируют транспорт, отсекают коллег объекта и посторонних"],
+  ["Конвой («Гром-4»)", "3", "Принимают задержанного, ведут в бус, охраняют в пути и в здании ФСБ"],
+  ["Водители", "2", "Ожидание вне видимости, блокирование транспорта объекта, эвакуация"],
+  ["Итого", "20", ""],
+], { firstBold: true, center: [1] }));
+add(SP());
+add(PN("Если бойцов меньше. Десять: командир, захват — 3, прикрытие — 2, блокирование — 3, водитель — 1. Пять: командир (он же прикрытие), захват — 2, прикрытие — 1, водитель — 1."));
 
-add(H2("4.7. Отказ объекта от взятки. Раскрытие Клиента"));
-add(BL([
-  "**Объект отказался.** Клиент не настаивает и выполняет законные требования объекта. Штраф, если выписан, оплачивается: отказ от оплаты — преступление (ст. 17.7 УК РО). Первый даёт «ОТБОЙ».",
-  "Отказ фиксируется как **положительный результат проверки**. Руководитель ССКБ может направить в ведомство письмо о добросовестности сотрудника. Честные сотрудники должны знать, что УСБ-М это видит.",
-  "**Клиент раскрыт.** Клиент не спорит и не оправдывается, произносит фразу опасности или уходит. Первый даёт «ОТБОЙ» либо, при угрозе Клиенту, «РЕАЛИЗАЦИЯ». После мероприятия — разбор причин раскрытия.",
-]));
+add(H2("Подчинение приданных сил"));
+add(PN("На время мероприятия бойцы «Альфы» и «Вымпела» находятся в полном оперативном подчинении руководителя мероприятия (п. «д» ст. 10, ч. 1 ст. 11 ФЗ «О ФСБ»). Руководитель определяет, что делать: объект, место, время, сигнал к началу, отбой. Командир ГЗ определяет, как: расстановку и способ захвата."));
+add(PN("Подчинение действует с начала инструктажа до команды «ОТБОЙ» или доклада о доставлении задержанного. Бойцы приданных сил не вступают в переговоры с руководством объекта и не дают комментариев."));
+
+add(H2("Экипировка и транспорт"));
+add(PN("ГЗ работает в полной боевой экипировке: бронежилет, шлем и балаклава (если допускаются правилами фракции), оружие с тактическим фонарём, наручники, рация. Форма единообразная. Фонари включаются по команде командира ГЗ — в помещении и в тёмное время суток."));
+add(PN("Оперативный состав работает в гражданской одежде или форме по решению руководителя, служебное удостоверение при себе обязательно. Клиент — в гражданской одежде, без символики ФСБ; при себе только помеченные деньги и техника записи."));
+add(PN("Микроавтобусы ожидают вне прямой видимости объекта, без проблесковых маячков. Водители не покидают машины."));
+
+add(H2("Связь и условные сигналы"));
+add(PN("Работа ведётся на отдельном канале, номер доводится на инструктаже. Фамилия и должность объекта в эфир не называются. Формула сообщения: кому — кто — что («Первый, я Сокол — подарок вручён»)."));
+add(PN("Условные сигналы:", { keepNext: true }));
+add(T([3300, 2700, CW - 6000], ["Сигнал", "Кто подаёт", "Значение"], [
+  ["«ЗАНЯЛИ ИСХОДНЫЕ»", "Командиры подгрупп", "Группы на позициях, радиомолчание"],
+  ["«ОБЪЕКТ НА ТОЧКЕ»", "Сокол", "Контакт начался, готовность № 1"],
+  ["«ПОДАРОК ВРУЧЁН»", "Сокол; Клиент — фразой «Спасибо, выручили»", "Объект взял деньги"],
+  ["«РЕАЛИЗАЦИЯ»", "Только Первый", "Задержание"],
+  ["«ОБЪЕКТ ПОД КОНТРОЛЕМ»", "Гром", "Объект лежит, в наручниках, оружие изъято"],
+  ["«ОБЪЕКТ УХОДИТ» + направление", "Сокол, блокирование", "Объект покидает точку"],
+  ["«СТОП»", "Любой участник", "Угроза посторонним — все замирают"],
+  ["«ОТБОЙ»", "Только Первый", "Мероприятие прекращено"],
+  ["«Мне срочно нужно позвонить»", "Клиент", "Клиент раскрыт или в опасности"],
+], { firstBold: true }));
+add(SP());
+add(PN("Во время захвата эфир занимают только Гром и Первый. Команды «РЕАЛИЗАЦИЯ» и «ОТБОЙ», поданные не Первым, не исполняются."));
 
 // ------------------------------------------------------------------------ V
-add(H1("V. СВЯЗЬ И УСЛОВНЫЕ СИГНАЛЫ"));
-add(H2("5.1. Позывные"));
-add(T([4000, CW - 4000], ["Участник", "Позывной"], [
-  ["Руководитель мероприятия", "«Первый»"],
-  ["Старший оперативной группы", "«Второй»"],
-  ["Командир ГЗ / подгруппы захвата, прикрытия, блокирования, конвоя", "«Гром» / «Гром-1», «Гром-2», «Гром-3», «Гром-4»"],
-  ["Наблюдение / видеооператор", "«Сокол-1», «Сокол-2» / «Камера»"],
-  ["Легендированный сотрудник", "«Клиент»"],
-  ["Следователь", "«Юрист»"],
-  ["Объект", "«Объект» — без фамилии и должности"],
-], { firstBold: false }));
-
-add(H2("5.2. Условные сигналы"));
-add(T([2600, 1900, 2250, CW - 6750], ["Сигнал", "Кто подаёт", "Значение", "Действия"], [
-  ["«ЗАНЯЛИ ИСХОДНЫЕ»", "Командиры подгрупп, «Сокол»", "Группы на позициях", "Радиомолчание, ожидание"],
-  ["«ОБЪЕКТ НА ТОЧКЕ»", "«Сокол»", "Объект прибыл, контакт начался", "Готовность № 1, водители за рулём"],
-  ["«ПОДАРОК ВРУЧЁН»", "«Сокол», дублирует Клиент условной фразой", "Объект взял деньги", "Ждать команду Первого"],
-  ["«РЕАЛИЗАЦИЯ»", "**Только Первый**", "Задержание", "Выдвижение и захват (раздел VI)"],
-  ["«ОБЪЕКТ ПОД КОНТРОЛЕМ»", "«Гром»", "Объект лежит, в наручниках, оружие изъято", "К объекту выходят СОГ и видеооператор"],
-  ["«ОБЪЕКТ УХОДИТ» + направление", "«Сокол», блокирование", "Объект покидает точку", "Блокирование транспорта; решение Первого"],
-  ["«СТОП»", "Любой участник", "Угроза посторонним, ошибка в объекте", "Все замирают до команды «Грома» или Первого"],
-  ["«ОТБОЙ»", "**Только Первый**", "Мероприятие прекращено", "Снятие с позиций, тишина в эфире"],
-  ["«НУЖЕН МЕДИК»", "Любой участник", "Есть пострадавший", "Вызов медиков ГКБ № 1"],
-], { firstBold: true }));
-
-add(H2("5.3. Правила радиообмена"));
-add(BL([
-  "Формула: **кому — кто — что**. Пример: «Первый, я Сокол — подарок вручён».",
-  "Фамилии, должности и ведомство объекта в эфир не называются.",
-  "Команды «РЕАЛИЗАЦИЯ» и «ОТБОЙ» подаёт только Первый. Команда, поданная другим участником, не исполняется.",
-  "Во время захвата эфир занимают только «Гром» и Первый. Остальные молчат до доклада «объект под контролем».",
-  "Получение команды подтверждается коротко: «Гром — принял».",
+add(H1("V. ПОДГОТОВКА МЕРОПРИЯТИЯ"));
+add(H2("Основания"));
+add(PN("Мероприятие проводится при наличии информации о преступлении:", { keepNext: true }));
+add(SUB([
+  "заявление гражданина о вымогательстве взятки;",
+  "оперативные сведения о получении денег конкретным должностным лицом (жалобы, обращения, материалы проверок);",
+  "требование или намёк должностного лица, полученные Клиентом при первичном контакте и зафиксированные на запись.",
 ]));
+add(PN("Схема, наиболее близкая к реальности: при первичном контакте объект требует деньги или намекает на них. Клиент соглашается, но берёт паузу: «Наличных при себе нет, могу подвезти через двадцать минут». За это время готовится оперативный эксперимент, и повторная встреча проходит под контролем ГЗ (вариант «А», раздел VI)."));
+add(PN("Предлагать деньги первым Клиенту запрещено. Нет инициативы объекта — нет мероприятия."));
+
+add(H2("Документы"));
+add(PN("До выхода Клиента на контакт оформляются: рапорт (Приложение 2), постановление о проведении оперативного эксперимента (Приложение 3), служебное задание Клиенту (Приложение 4), акт досмотра, пометки и вручения (Приложение 5)."));
+add(PN("Без служебного задания и включённой видеозаписи Клиент на контакт не выходит."));
+
+add(H2("Сбор и инструктаж"));
+add(PN("Порядок инструктажа:", { keepNext: true }));
+add(SUB([
+  "сбор в здании ФСБ (г. Москва, ул. Большая Лубянка, д. 27), доклад командира ГЗ о численности и готовности;",
+  "доведение задачи: объект, вариант реализации, место и время, сигналы, канал, позывные;",
+  "распределение ролей и подгрупп, назначение видеооператоров (не менее двух ракурсов);",
+  "проверка экипировки, оружия, фонарей, наручников, раций и связи;",
+  "досмотр Клиента, пометка и вручение денег;",
+  "предупреждение о неразглашении (ст. 14.1 УК РО);",
+  "контроль понимания: командир ГЗ и Клиент повторяют сигналы вслух;",
+  "выдвижение на исходные позиции по команде руководителя.",
+]));
+add(PN("Текст инструктажа и доклады о готовности — Приложение 1, тексты 1 и 2."));
+
+add(H2("Досмотр Клиента, пометка и вручение денег"));
+add(PN("Старший оперативной группы под видеозапись досматривает Клиента и фиксирует, что других денег при нём нет. Затем осматривает деньги, переписывает номера купюр, помечает их специальным химическим веществом и надписью «ВЗЯТКА», видимой в ультрафиолете, и вручает Клиенту вместе с техникой записи. Всё оформляется одним актом (Приложение 5)."));
+add(RP("(OOC) Отыгровка", [
+  "/me провёл личный досмотр сотрудника «Клиент» под видеозапись",
+  "/do Денежных средств при Клиенте не обнаружено.",
+  "/me разложил купюры перед камерой и переписал их номера в акт",
+  "/me обработал купюры специальным химическим веществом «Тушь-7»",
+  "/me нанёс на каждую купюру надпись «ВЗЯТКА» ультрафиолетовым маркером",
+  "/do При обычном освещении пометки не видны.",
+  "/me вручил Клиенту купюры и скрытую камеру под роспись в акте",
+]));
+add(P("(OOC) Сама сумма передаётся игровым способом. Пометка — отыгровка, закреплённая актом и видеозаписью.", { before: 120 }));
 
 // ------------------------------------------------------------------------ VI
-add(H1("VI. ЗАДЕРЖАНИЕ ОБЪЕКТА"));
-add(H2("6.1. Порядок задержания"));
-add(NL([
-  "Первый: «Гром, РЕАЛИЗАЦИЯ!» — Гром: «Принял, работаем!».",
-  "Водители выдвигают бусы и блокируют транспорт объекта спереди и сзади (схема 1).",
-  "Блокирование выходит первым: перекрывает подходы, выходы из здания, проезжую часть. Посторонним — «ОСТАВАТЬСЯ НА МЕСТАХ! ОТОЙТИ!».",
-  "Прикрытие занимает позиции полукольцом: оружие в готовности, фонари по команде, контроль рук объекта и окружающих.",
-  "Захват: бойцы № 1–3 работают по объекту, боец № 4 — по Клиенту. Команды подаёт командир ГЗ (п. 6.3).",
-  "Объект уложен → боец № 2 изымает табельное оружие → боец № 1 надевает наручники → боец № 3 проводит поверхностный досмотр на оружие. Деньги не трогаем.",
-  "Командир ГЗ: «Первый, я Гром — объект под контролем».",
-  "К объекту выходят СОГ и видеооператор. Предмет взятки остаётся на месте до изъятия следователем под запись, если только объект не пытается от него избавиться.",
-  "Боец № 4 поднимает Клиента и выводит его за оцепление как свидетеля. Для всех посторонних Клиент — случайный прохожий.",
-]));
-add(NOTE("НОРМАТИВ", ["От команды «РЕАЛИЗАЦИЯ» до доклада «объект под контролем» — не более 30 секунд (отлично — 20 секунд)."], "info"));
+add(H1("VI. ОПЕРАТИВНЫЙ ЭКСПЕРИМЕНТ"));
+add(H2("Поведение Клиента"));
+add(PN("Запись включается до выхода на контакт и не прерывается до передачи задержанного следователю. Никакого монтажа."));
+add(PN("Роль Клиента пассивная: он не предлагает, а соглашается. Сумму и условия называет объект."));
+add(PN("Запрещено: предлагать деньги первым, уговаривать, настаивать, давить на жалость, угрожать, ссылаться на знакомство с руководством объекта."));
+add(PN("Допустимые фразы Клиента: «Что мне теперь будет?», «Как можно решить вопрос?», «Сколько?». Такие вопросы не склоняют к взятке: решение остаётся за объектом."));
 
-add(H2("6.2. Схема расстановки"));
+add(H2("Что должно попасть на запись"));
+add(PN("Запись должна ответить на три вопроса:", { keepNext: true }));
+add(SUB([
+  "**кто** получает — должностное лицо: видны форма, нагрудный знак, лицо, служебный транспорт;",
+  "**что** получено — сумма, названная вслух или видимая при передаче;",
+  "**за что** — действие или бездействие по службе: «не буду оформлять», «отпущу», «сделаю документ».",
+]));
+add(PN("Если на один из вопросов ответа нет, реализацию лучше отложить и доработать эпизод."));
+
+add(H2("Сигнал о передаче"));
+add(PN("Сигнал подаётся только после того, как объект взял деньги. Согласие без передачи — ещё не получение денег."));
+add(PN("После передачи Клиент ведёт себя естественно: благодарит условной фразой «Спасибо, выручили» (сотруднику полиции — «Спасибо, командир, выручил») и отходит на несколько шагов. При выходе ГЗ выполняет команды наравне со всеми."));
+
+add(H2("Варианты реализации"));
+add(PN("**Вариант «А» — задержание сразу после передачи.** Применяется, когда встреча назначена заранее. ГЗ скрытно ждёт в 50–150 м, бусы стоят за углом или во дворе. По сигналу «ПОДАРОК ВРУЧЁН» Первый даёт команду «РЕАЛИЗАЦИЯ». Это основной и самый сильный вариант: деньги при объекте, следы вещества на руках."));
+add(PN("**Вариант «Б» — отложенная реализация через руководство ведомства.** Применяется, когда передача прошла в непредсказуемом месте и ГЗ не могла быть рядом. Порядок:", { keepNext: true }));
+add(SUB([
+  "Клиент и Сокол фиксируют передачу и приметы объекта: нагрудный знак, фамилию на форме, бортовой номер, направление движения;",
+  "Первый объявляет сбор ГЗ по тревоге — не более 15 минут, полная экипировка;",
+  "Сокол по возможности ведёт объект;",
+  "Первый предъявляет руководителю ведомства удостоверение, запрашивает сведения об объекте и просит вызвать его в определённое место под служебным предлогом (п. «н», «р», «ф» ст. 10 ФЗ «О ФСБ»);",
+  "руководителю сообщается минимум: «Проводится мероприятие УСБ-М, требуется ваше содействие»; разъясняется ответственность за утечку (ст. 14.1, ч. 3 ст. 16.2, ч. 2 ст. 17.8 УК РО);",
+  "захват проводится в месте вызова по команде «РЕАЛИЗАЦИЯ».",
+]));
+add(PN("При варианте «Б» время работает против нас: объект может избавиться от денег или получить предупреждение. Промежуток между передачей и захватом должен быть минимальным. (OOC) Если объект уходит из игры, чтобы избежать задержания, сохраните запись и действуйте по правилам сервера."));
+
+add(H2("Отказ объекта и раскрытие Клиента"));
+add(PN("Если объект не проявил инициативы или отказался от денег, Клиент не настаивает и выполняет законные требования объекта. Выписанный штраф оплачивается: отказ от оплаты — преступление (ст. 17.7 УК РО). Первый даёт «ОТБОЙ». Результат считается положительным: руководитель ССКБ может направить в ведомство письмо о добросовестности сотрудника."));
+add(PN("Если Клиент раскрыт, он не спорит и уходит либо произносит фразу опасности. Первый даёт «ОТБОЙ» или, при угрозе Клиенту, «РЕАЛИЗАЦИЯ»."));
+
+// ------------------------------------------------------------------------ VII
+add(H1("VII. ЗАДЕРЖАНИЕ"));
+add(H2("Порядок задержания"));
+add(PN("Первый: «Гром, РЕАЛИЗАЦИЯ!». Гром: «Принял, работаем!»."));
+add(PN("Водители блокируют транспорт объекта спереди и сзади."));
+add(PN("Блокирование перекрывает подходы, выходы из здания и проезжую часть, удерживает посторонних."));
+add(PN("Прикрытие занимает позиции полукольцом: оружие в готовности, фонари по команде, контроль рук объекта и окружающих."));
+add(PN("Захват: бойцы № 1–3 работают по объекту, боец № 4 — по Клиенту. Клиента укладывают вместе со всеми, чтобы не раскрыть."));
+add(PN("Последовательность: объект уложен → боец № 2 изымает табельное оружие → боец № 1 надевает наручники → боец № 3 проверяет, нет ли ещё оружия. Деньги не трогать."));
+add(PN("Командир ГЗ докладывает: «Первый, я Гром — объект под контролем». К объекту выходят СОГ и видеооператор. Боец № 4 выводит Клиента за оцепление как свидетеля."));
+add(PN("Норматив: от команды «РЕАЛИЗАЦИЯ» до доклада «объект под контролем» — не более 30 секунд."));
+
+add(H2("Схема расстановки"));
 add(FIG("schema.png", "Схема 1. Расстановка группы захвата при задержании на открытой местности (вариант «А», 20 бойцов)", 620, 430));
-add(P("Кольца расстановки: внутреннее — захват (лицом к объекту), среднее — прикрытие (лицом к объекту и к входу в здание), внешнее — блокирование (лицом наружу, к возможным помехам). Конвой ждёт у ближнего буса и принимает задержанного после доклада «под контролем»."));
+add(P("Внутреннее кольцо — захват (лицом к объекту), среднее — прикрытие (лицом к объекту и ко входу в здание), внешнее — блокирование (лицом наружу). Конвой ждёт у ближнего буса."));
 
-add(H2("6.3. Команды группы захвата"));
-add(T([500, 4400, CW - 4900], ["№", "Команда", "Назначение"], [
-  { section: "Командир ГЗ — объекту" },
-  ["1", "**«РАБОТАЕТ ФСБ! ВСЕМ ОСТАВАТЬСЯ НА МЕСТАХ!»**\n*В момент выхода её выкрикивают все бойцы*", "Обозначение. Первая и обязательная команда: объект и окружающие должны понимать, что это задержание, а не нападение"],
-  ["2", "**«РУКИ! ПОКАЗАТЬ РУКИ!»**", "Контроль рук: в руках — оружие и деньги"],
-  ["3", "**«ЛЕЖАТЬ! ЛИЦОМ В ПОЛ!»**\n*Жаргон ГЗ: «Мордой в пол!»*", "Укладывание"],
-  ["4", "**«РУКИ ЗА СПИНУ! ЛАДОНЯМИ ВВЕРХ!»**", "Подготовка к наручникам"],
+add(H2("Команды", { pageBreak: true }));
+add(PN("Команды объекту подаёт только командир ГЗ:", { keepNext: true }));
+add(T([600, 5000, CW - 5600], ["№", "Команда", "Зачем"], [
+  ["1", "**«РАБОТАЕТ ФСБ! ВСЕМ ОСТАВАТЬСЯ НА МЕСТАХ!»**", "Обозначение. Подаётся первой, чтобы задержание не приняли за нападение. В момент выхода кричат все"],
+  ["2", "**«РУКИ! ПОКАЗАТЬ РУКИ!»**", "В руках — оружие и деньги"],
+  ["3", "**«ЛЕЖАТЬ! ЛИЦОМ В ПОЛ!»**\nжаргон ГЗ — «Мордой в пол!»", "Укладывание"],
+  ["4", "**«РУКИ ЗА СПИНУ! ЛАДОНЯМИ ВВЕРХ!»**", "Под наручники"],
   ["5", "**«НОГИ СКРЕСТИТЬ! НЕ ДВИГАТЬСЯ!»**", "Исключить попытку встать"],
-  ["6", "**«ОРУЖИЕ ПРИ СЕБЕ ЕСТЬ? ГДЕ?»**", "Безопасность перед изъятием оружия"],
-  ["7", "**«ПРЕДУПРЕЖДАЮ: ПРИ СОПРОТИВЛЕНИИ БУДУТ ПРИМЕНЕНЫ ФИЗИЧЕСКАЯ СИЛА И СПЕЦИАЛЬНЫЕ СРЕДСТВА!»**", "Только при невыполнении команд. Предупреждение фиксирует правомерность силы"],
-  { section: "Блокирование и прикрытие — окружающим" },
-  ["8", "**«РАБОТАЕТ ФСБ! ОТОЙТИ! НЕ ПРИБЛИЖАТЬСЯ!»**", "Посторонним"],
-  ["9", "**«Товарищ сотрудник, проводится мероприятие ФСБ. Не вмешивайтесь. Помеха задержанию — статья 17.8, часть 2 УК РО!»**", "Коллегам объекта. Если продолжают — задержание вмешавшегося"],
-  ["10", "**«ОРУЖИЕ НЕ ТРОГАТЬ! РУКИ НА ВИДУ!»**", "Вооружённым лицам рядом с точкой"],
+  ["6", "**«ОРУЖИЕ ПРИ СЕБЕ ЕСТЬ? ГДЕ?»**", "Перед изъятием оружия"],
+  ["7", "**«ПРЕДУПРЕЖДАЮ: ПРИ СОПРОТИВЛЕНИИ БУДУТ ПРИМЕНЕНЫ ФИЗИЧЕСКАЯ СИЛА И СПЕЦИАЛЬНЫЕ СРЕДСТВА!»**", "Только при невыполнении команд"],
 ], { center: [0] }));
-add(SP(80));
-add(NOTE("ПРАВИЛО ОДНОГО ГОЛОСА", [
-  "В момент выхода команду № 1 выкрикивают все: это эффект внезапности. Дальше команды подаёт только командир ГЗ, остальные работают молча. Когда кричат все, объект «не слышит» команд, а на видео получается хаос.",
-]));
+add(SP());
+add(PN("Окружающим команды подают блокирование и прикрытие. Посторонним: «РАБОТАЕТ ФСБ! ОТОЙТИ!». Коллегам объекта: «Товарищ сотрудник, проводится мероприятие ФСБ. Не вмешивайтесь. Помеха задержанию — статья 17.8, часть 2 УК РО!». Вооружённым: «ОРУЖИЕ НЕ ТРОГАТЬ! РУКИ НА ВИДУ!»."));
+add(PN("**Правило одного голоса.** Команду «РАБОТАЕТ ФСБ!» в момент выхода кричат все, дальше говорит только командир ГЗ. Когда кричат все, объект не слышит команд, а на видео получается хаос."));
 
-add(H2("6.4. Отыгровка при ограничениях игрового функционала (OOC)"));
-add(P("Повалить объекта механикой игры нельзя, поэтому физические действия показываются отыгровкой — короткими действиями в темпе захвата. Длинные /me пишутся уже после доклада «под контролем».", { keepNext: true }));
+add(H2("Отыгровка (OOC)"));
+add(PN("Повалить объект механикой игры нельзя, поэтому физические действия показываются короткими отыгровками в темпе захвата. Результат действия над чужим персонажем не навязывается: спорные действия решаются через /try или ответную отыгровку объекта.", { keepNext: true }));
 add(RP("(OOC) Пример отыгровки захвата", [
   "# Боец № 1",
-  "/me резко сблизился с объектом, перехватил его руку и провёл загиб за спину",
+  "/me резко сблизился с объектом, перехватил руку и провёл загиб за спину",
   "/me вместе с бойцом № 3 уложил объект лицом на землю",
   "/do Объект лежит лицом вниз, руки заведены за спину.",
-  "/me достал наручники и застегнул их на запястьях объекта   (затем — наручники функционалом игры)",
   "# Боец № 2",
-  "/me извлёк из кобуры объекта табельный пистолет, отстегнул магазин и убрал оружие в подсумок",
-  "/do Оружие объекта изъято и разряжено.",
+  "/me извлёк из кобуры объекта табельный пистолет и разрядил его",
+  "# Боец № 1",
+  "/me застегнул наручники на запястьях объекта (затем — наручники функционалом игры)",
   "# Боец № 3",
   "/me прохлопал пояс, карманы и голени задержанного, проверяя, нет ли оружия",
   "# Боец № 4",
-  "/me уложил на землю мужчину, стоявшего рядом с объектом, и зафиксировал его руки",
+  "/me уложил на землю мужчину, стоявшего рядом с объектом",
 ]));
-add(SP(60));
-add(BL([
-  "Результат действия над чужим персонажем не навязывается. Исход спорных действий (вырваться, сбросить деньги, выхватить оружие) определяется /try или ответной отыгровкой объекта по правилам сервера.",
-  "Если объект не ложится (отказ или нет анимации), наручники надеваются стоя, а положение «лёжа» закрепляется отыгровкой. Невыполнение команды — основание для физической силы (п. «в» ч. 1 ст. 15 ФЗ «О ФСБ») и признак ст. 17.6 УК РО.",
+add(SP());
+add(PN("Если объект не ложится, наручники надеваются стоя, а положение «лёжа» закрепляется отыгровкой. Невыполнение команды — основание для применения физической силы (п. «в» ч. 1 ст. 15 ФЗ «О ФСБ»)."));
+
+add(H2("Пределы силы и оружия"));
+add(PN("**Можно:** физическая сила и наручники при задержании (ст. 14, 15 ФЗ «О ФСБ»); оружие в готовности с включённым фонарём — объект вооружён, преступление тяжкое."));
+add(PN("**Стрелять — только** при вооружённом сопротивлении или нападении, а также при попытке скрыться лица, застигнутого при получении денег, если иначе задержать невозможно (ст. 13 ФЗ «О ФСБ»). Никогда — при скоплении людей, если могут пострадать посторонние."));
+add(PN("**Нельзя:** бить лежащего и закованного, материться и оскорблять, держать закованного на прицеле в упор, «наказывать» объект на месте. Превышение мер — ч. 2 ст. 4.2 и ст. 15.1 УК РО."));
+
+add(H2("Задержание в здании ведомства"));
+add(PN("Первый входит первым и предъявляет удостоверение дежурному: «Управление собственной безопасности ФСБ. Проводится мероприятие. Прошу не препятствовать и оставаться на местах»."));
+add(PN("Блокирование занимает вход, КПП, запасной выход и стоянку служебного транспорта. В помещение с объектом первым входит прикрытие с включёнными фонарями."));
+add(PN("Других сотрудников ведомства не укладывают, если они не мешают: «Всем оставаться на местах, руки на виду!». Попытка помешать — ч. 2 ст. 17.8 УК РО и задержание."));
+
+// ------------------------------------------------------------------------ VIII
+add(H1("VIII. ДЕЙСТВИЯ ПОСЛЕ ЗАДЕРЖАНИЯ"));
+add(H2("Установление личности: ФИО и дата рождения"));
+add(PN("Так это делают на реальных задержаниях:", { keepNext: true }));
+add(SUB([
+  "**сначала контроль, потом вопросы** — пока объект не лежит в наручниках без оружия, звучат только команды;",
+  "**спрашивает один** — командир ГЗ или докладчик; остальные молчат, видеооператор снимает лицо и записывает ответы;",
+  "**коротко и по одному** — вопрос, ответ, следующий вопрос; не расслышали — «Громче!», «Полностью!»;",
+  "**официально и на «вы»** — «мордой в пол» остаётся языком захвата, после контроля — холодная вежливость;",
+  "**сначала личность, потом событие** — ФИО, дата рождения, место службы, оружие, что получил;",
+  "**проверить, а не поверить** — ответы сверяются с паспортом или удостоверением;",
+  "**первые слова самые ценные** — пояснения записываются дословно, но не выбиваются: задержанный вправе молчать, принуждение к показаниям — ст. 16.6 УК РО.",
 ]));
-
-add(H2("6.5. Пределы применения силы и оружия"));
-add(T([1900, CW - 1900], null, [
-  ["**МОЖНО**", "Физическая сила и наручники к объекту при любом задержании (п. «б» ч. 1 ст. 15, п. «г», «д» ч. 1 ст. 14 ФЗ «О ФСБ»). Оружие в руках, в готовности, с включённым фонарём: объект вооружён, преступление тяжкое."],
-  ["**СТРЕЛЯТЬ — ТОЛЬКО**", "При вооружённом сопротивлении или нападении. При попытке скрыться лица, застигнутого при получении взятки, если иначе задержать невозможно (п. «г», «д» ч. 1 ст. 13). Никогда — при скоплении людей, если могут пострадать посторонние (ч. 3 ст. 13)."],
-  ["**НЕЛЬЗЯ**", "Бить, пинать, наступать на лежащего и закованного. Мат и оскорбления. Держать закованного на прицеле в упор (ствол — в безопасную сторону). Применять к Клиенту силу сверх укладывания. «Наказывать» объект на месте. Превышение мер — ч. 2 ст. 4.2, ст. 15.1 УК РО."],
-], { size: 22 }));
-
-add(H2("6.6. Задержание в здании ведомства"));
-add(NL([
-  "Первый (или уполномоченный опер УСБ-М) входит первым и предъявляет удостоверение дежурному: «Управление собственной безопасности ФСБ. Проводится мероприятие. Прошу не препятствовать и оставаться на местах» (п. «и», «ф» ст. 10 ФЗ «О ФСБ»).",
-  "Блокирование занимает вход, КПП, запасной выход, стоянку служебного транспорта.",
-  "В помещение с объектом первым входит прикрытие с включёнными фонарями.",
-  "Других сотрудников ведомства не укладывают, если они не мешают: «Всем оставаться на местах, руки на виду!».",
-  "Вооружённым коллегам объекта: «Оружие не трогать!». Попытка помешать — ч. 2 ст. 17.8 УК РО и задержание.",
-  "Руководитель ведомства, если он на месте, получает устное уведомление от Первого сразу после доклада «объект под контролем».",
-]));
-
-// ------------------------------------------------------------------------ VII
-add(H1("VII. УСТАНОВЛЕНИЕ ЛИЧНОСТИ: ФИО И ДАТА РОЖДЕНИЯ"));
-add(H2("7.1. Как это делается на реальных задержаниях"));
-add(P("На любой оперативной съёмке после захвата звучат одни и те же короткие вопросы, и задаёт их один человек. Этот порядок берём за основу."));
-add(NL([
-  "**Сначала контроль, потом вопросы.** Пока объект не лежит в наручниках без оружия, звучат только команды. Вопрос «Как вас зовут?» во время захвата — ошибка.",
-  "**Спрашивает один.** Командир ГЗ или назначенный докладчик. Остальные молчат, видеооператор снимает лицо задержанного и записывает ответы.",
-  "**Коротко и по одному.** Вопрос — ответ — следующий вопрос. Не расслышали: «Громче!», «Полностью!».",
-  "**Официально и на «вы».** «Мордой в пол» — язык захвата, а не опроса. После доклада «под контролем» — холодная вежливость: она действует сильнее крика.",
-  "**Сначала личность, потом событие.** Порядок: ФИО → дата рождения → место службы и должность → оружие при себе → что получил.",
-  "**Проверить, а не поверить.** Ответы сверяются с паспортом или служебным удостоверением, расхождения фиксируются.",
-  "**Первые слова — самые ценные.** Спонтанные пояснения («это не моё», «он сам предложил») записываются дословно, но не выбиваются. Задержанный вправе молчать (примечание к ст. 16.10 УК РО), принуждение к показаниям — ст. 16.6 УК РО.",
-]));
-add(SP(60));
-add(NOTE("ЗАЧЕМ ДАТА РОЖДЕНИЯ", [
-  "Фамилия и имя не дают однозначной идентификации. Дата рождения исключает однофамильцев, нужна для проверки по базам и розыску и для протокола. Классическая протокольная формулировка — «число, месяц, год рождения». Если у персонажа нет отчества, достаточно фамилии и имени, как в паспорте.",
-], "info"));
-
-add(H2("7.2. Скрипт опроса на месте задержания", { pageBreak: true }));
+add(PN("Дата рождения нужна, чтобы исключить однофамильцев, проверить человека по базам и заполнить протокол. Протокольная формула — «число, месяц, год рождения»."));
+add(PN("Порядок вопросов:", { keepNext: true }));
 add(DIALOG([
   ["Докладчик", "**«Фамилия, имя, отчество. Полностью.»**"],
   ["Задержанный", "«[[Фамилия Имя Отчество]].»"],
-  ["Докладчик", "**«Число, месяц, год рождения?»**\n*Допустимо короче: «Дата рождения?»*"],
+  ["Докладчик", "**«Число, месяц, год рождения?»**\n(можно короче: «Дата рождения?»)"],
   ["Задержанный", "«[[дата]].»"],
-  ["Докладчик", "**«Место службы? Должность, звание?»**\n*Устанавливаем субъекта: должностное лицо*"],
+  ["Докладчик", "**«Место службы? Должность, звание?»**"],
   ["Задержанный", "«[[ведомство, должность, звание]].»"],
-  ["Докладчик", "**«Оружие, колющие, режущие предметы при себе есть?»**\n*Безопасность перед досмотром*"],
-  ["Докладчик", "**«Что вы сейчас получили? От кого и за что?»**\n*Любой ответ или молчание фиксируем как есть и не спорим*"],
+  ["Докладчик", "**«Оружие, колющие, режущие предметы при себе есть?»**"],
+  ["Докладчик", "**«Что вы сейчас получили? От кого и за что?»**\n(любой ответ или молчание фиксируется как есть, без спора)"],
   ["Докладчик", "**«Вам понятно, почему вы задержаны?»**"],
-  ["→", "Переход к объявлению о задержании и разъяснению прав (раздел VIII)."],
+]));
+add(SP());
+add(PN("Далее докладчик объявляет о задержании и разъясняет права (Приложение 1, тексты 4 и 5)."));
+add(PN("Если задержанный молчит или отказывается назвать себя, не спорить и не угрожать: «Ваш отказ назвать себя будет отражён в протоколе. Личность будет установлена по документам». Личность устанавливается по удостоверению, через руководство ведомства и по базам."));
+
+add(H2("Объявление о задержании и права"));
+add(PN("На месте докладчик объявляет о задержании кратким текстом. В здании ФСБ следователь зачитывает полный текст и отмечает разъяснение прав в протоколе (Приложение 1, тексты 4 и 5)."));
+add(PN("Требование адвоката фиксируется с указанием времени. Препятствовать работе адвоката нельзя (ст. 9.2 УК РО)."));
+add(PN("(OOC) Если процессуальный кодекс сервера требует дословную формулировку прав (право на звонок, срок ожидания адвоката), внесите её в текст 4 Приложения 1."));
+
+add(H2("Личный обыск, изъятие, смывы"));
+add(PN("Личный обыск проводит следователь или старший оперативной группы под видеозапись. Перед обыском задержанному предлагается добровольно выдать деньги и предметы, полученные незаконным путём (Приложение 1, текст 6)."));
+add(PN("Обнаруженные деньги сверяются с номерами из акта и проверяются в ультрафиолете. С ладоней задержанного берутся смывы. Изъятое упаковывается, опечатывается, снабжается пояснительной надписью и подписями участвующих лиц."));
+add(RP("(OOC) Отыгровка обыска", [
+  "/me надел перчатки и начал личный обыск задержанного под видеозапись",
+  "/do (ответ задержанного или результат обыска) В кармане брюк пачка купюр.",
+  "/me включил ультрафиолетовый фонарь и осветил купюры",
+  "/do В ультрафиолете на купюрах видна надпись «ВЗЯТКА».",
+  "/me сверил номера купюр с актом пометки",
+  "/me осветил фонарём ладони задержанного",
+  "/do На ладонях видно свечение специального вещества.",
+  "/me взял смывы с ладоней на ватные тампоны и упаковал их",
+  "/me упаковал купюры в сейф-пакет, опечатал и подписал",
 ]));
 
-add(H2("7.3. Если задержанный молчит, отказывается или лжёт"));
-add(BL([
-  "Не спорить, не угрожать, не «дожимать». Сказать ровно: **«Ваш отказ назвать себя будет отражён в протоколе. Личность будет установлена по документам».**",
-  "Установить личность по документам под запись: /me достал из нагрудного кармана задержанного служебное удостоверение и сверил фотографию с лицом.",
-  "Через руководство ведомства и базы данных (п. «н» ст. 10 ФЗ «О ФСБ»): по нагрудному знаку, бортовому номеру, графику смены.",
-  "Систематический отказ выполнять законные требования — признак ст. 17.6 УК РО. Квалифицировать взвешенно и не «навешивать» статьи ради давления.",
-  "Назвался чужим именем — зафиксировать дословно под запись, после установления личности отразить в рапорте.",
-]));
-
-add(H2("7.4. Тон: как нельзя и как нужно"));
-add(T([3000, 3200, CW - 6200], ["Неправильно", "Правильно", "Почему"], [
-  ["«Ну что, взяточник, как тебя звать?»", "«Фамилия, имя, отчество. Полностью.»", "Оценка до решения — повод для жалобы, официальный тон — стандарт"],
-  ["«Говори, за что взял, хуже будет!»", "«Что вы сейчас получили? От кого?» — и принять любой ответ", "Угроза — ст. 16.6 УК РО, показания недопустимы"],
-  ["Трое спрашивают одновременно", "Спрашивает один, остальные молчат", "На видео хаос, ответов не слышно"],
-  ["Вопросы во время укладывания", "Вопросы после доклада «под контролем»", "Объект не может одновременно отвечать и выполнять команды"],
-  ["«Документы давай!» закованному", "«Где ваши документы?» — и сотрудник достаёт их сам под запись", "Закованный не может выполнить такое требование"],
-]));
-
-// ------------------------------------------------------------------------ VIII
-add(H1("VIII. ОБЪЯВЛЕНИЕ О ЗАДЕРЖАНИИ И РАЗЪЯСНЕНИЕ ПРАВ"));
-add(P("Объявляет докладчик сразу после установления личности, под видеозапись. Читать чётко, без спешки, смотреть на задержанного. Формула прав взята из реальной процессуальной практики."));
-add(H2("8.1. Полный текст"));
-add(SCRIPT("Читает докладчик", [
-  "«Гражданин [[Фамилия Имя Отчество]], [[дата рождения]] года рождения!",
-  "Вы задержаны сотрудниками Федеральной службы безопасности, Управление собственной безопасности по городу Москва, по подозрению в совершении преступления, предусмотренного частью первой статьи 15.4 Уголовного кодекса РО, — получение взятки. Задержание произведено в соответствии с пунктом „в“ статьи 9 и пунктом „в“ статьи 10 Федерального закона „О Федеральной службе безопасности“. Ход задержания фиксируется на видео.",
-  "Вам разъясняются ваши права. Вы вправе не свидетельствовать против себя. При согласии дать показания вы предупреждаетесь о том, что ваши показания могут быть использованы в качестве доказательств по уголовному делу, в том числе и при последующем отказе от этих показаний. Вы вправе пользоваться помощью адвоката. Вы вправе обжаловать действия сотрудников ФСБ в вышестоящий орган, прокуратуру или суд.",
-  "Вам понятны ваши права?»",
-]));
-add(SP(80));
-add(NOTE("СВЕРЬТЕ С ПРОЦЕССУАЛЬНЫМ КОДЕКСОМ РО", [
-  "Текст составлен по УК РО и ФЗ «О ФСБ». Если процессуальный кодекс сервера требует дословную формулировку прав (право на звонок, срок ожидания адвоката и т.п.), внесите её в п. 8.1 до начала обучения.",
-], "info"));
-
-add(H2("8.2. Краткий текст — для динамичной обстановки"));
-add(SCRIPT("Читает докладчик; полный текст — позже, в здании ФСБ", [
-  "«Вы задержаны ФСБ по подозрению в получении взятки, статья 15.4 УК РО. Вы вправе не свидетельствовать против себя и пользоваться помощью адвоката. Права понятны?»",
-]));
-
-add(H2("8.3. Адвокат"));
-add(BL([
-  "Требование адвоката фиксируется в протоколе с указанием времени.",
-  "Адвокату обеспечивается доступ к задержанному в порядке, установленном процессуальным законодательством РО. Воспрепятствование его законной деятельности — ст. 9.2 УК РО (до 40 месяцев лишения свободы).",
-  "Показания, полученные после отказа в адвокате или под давлением, на разборе не приводятся.",
-]));
+add(H2("Доставление"));
+add(PN("Задержанного ведут двое бойцов конвоя, третий идёт впереди и открывает бус. В пути о деле не говорят. Задержанного доставляют в здание ФСБ (г. Москва, ул. Большая Лубянка, д. 27), время доставления фиксируется. До передачи следователю задержанный не остаётся без охраны."));
 
 // ------------------------------------------------------------------------ IX
-add(H1("IX. ДОСМОТР, ИЗЪЯТИЕ, ДОСТАВЛЕНИЕ"));
-add(H2("9.1. Личный досмотр"));
-add(P("Проводит следователь или старший оперативной группы под видеозапись (п. «м» ст. 10 ФЗ «О ФСБ»). Перед досмотром звучит классическая формула:", { keepNext: true }));
-add(SCRIPT("Говорит следователь", [
-  "«Сейчас будет проведён ваш личный досмотр, он фиксируется на видео. Предлагаю добровольно выдать денежные средства и иные предметы, полученные незаконным путём, а также предметы, запрещённые к обороту. Желаете что-либо выдать?»",
+add(H1("IX. ОФОРМЛЕНИЕ И ПЕРЕДАЧА МАТЕРИАЛОВ В ПРОКУРАТУРУ"));
+add(H2("Пакет документов"));
+add(PN("По итогам мероприятия формируется пакет:", { keepNext: true }));
+add(SUB([
+  "рапорт и постановление о проведении оперативного эксперимента (Приложения 2, 3);",
+  "служебное задание Клиенту (Приложение 4);",
+  "акт досмотра, пометки и вручения (Приложение 5);",
+  "акт оперативного эксперимента с видеозаписями и стенограммой разговора (Приложение 6);",
+  "протокол задержания с результатами личного обыска (Приложение 7);",
+  "постановление о представлении результатов в прокуратуру и сопроводительное письмо (Приложение 8).",
 ]));
-add(SP(60));
-add(RP("(OOC) Отыгровка досмотра и УФ-исследования", [
-  "/me надел перчатки и приступил к личному досмотру под видеозапись",
-  "/me проверил карманы формы и брюк задержанного",
-  "/do (результат — ответом задержанного или функционалом обыска) В правом кармане брюк пачка купюр.",
-  "/me извлёк купюры и разложил их перед камерой",
-  "/me включил ультрафиолетовый фонарь и осветил купюры",
-  "/do В ультрафиолете на купюрах проступает надпись «ВЗЯТКА».",
-  "/me сверил серии и номера купюр с протоколом пометки",
-  "/do Серии и номера совпадают.",
-  "/me осветил ультрафиолетовым фонарём ладони задержанного",
-  "/do На ладонях задержанного характерное свечение специального вещества.",
-  "/me сделал смывы с ладоней задержанного на ватные тампоны и упаковал их отдельно",
-  "/me упаковал купюры в сейф-пакет, опечатал его и нанёс пояснительную надпись",
+add(PN("Пакет передаётся прокурору. Решение о привлечении к ответственности и о наказании принимает прокуратура."));
+
+add(H2("Уведомления"));
+add(PN("Сразу после доставления руководитель мероприятия уведомляет прокурора и руководство ведомства задержанного (Приложение 9)."));
+
+add(H2("Разбор с руководством и прокурором"));
+add(PN("Порядок разбора:", { keepNext: true }));
+add(SUB([
+  "открытие — руководитель мероприятия представляет участников;",
+  "официальное сообщение — зачитывает докладчик (Приложение 1, текст 8);",
+  "доклад следователя о результатах мероприятия (Приложение 1, текст 7) и перечень передаваемых материалов;",
+  "вопросы прокурора и адвоката;",
+  "позиция руководства ведомства;",
+  "передача материалов прокурору;",
+  "закрытие.",
 ]));
 
-add(H2("9.2. Изъятие"));
-add(BL([
-  "Изымаются: предмет взятки; табельное оружие объекта (после следственных действий передаётся руководству ведомства по акту); средства связи и документы — по решению следователя.",
-  "Всё изъятое перечисляется в протоколе (Приложение 5): наименование, количество или сумма, упаковка.",
-  "Формула реальных протоколов: «Изъятое упаковано, опечатано, снабжено пояснительной надписью и подписями участвующих лиц».",
+add(H2("Язык подозрения"));
+add(PN("Во всех докладах, документах и сообщениях используются формулировки подозрения:", { keepNext: true }));
+add(T([4300, CW - 4300], ["Нельзя", "Нужно"], [
+  ["«взяточник», «коррупционер»", "«подозреваемый», «задержанный», «должностное лицо»"],
+  ["«получил взятку»", "«по имеющимся данным, получил денежные средства»"],
+  ["«совершил преступление»", "«действия содержат признаки преступления, предусмотренного…»"],
+  ["«задержан с поличным»", "«задержан после передачи ему денежных средств»"],
+  ["«вина доказана», «виновен»", "«передача денежных средств задокументирована с применением видеофиксации»"],
+  ["«назначено наказание»", "«материалы направлены в прокуратуру для принятия процессуального решения»"],
 ]));
 
-add(H2("9.3. Доставление"));
-add(BL([
-  "Задержанного ведут двое бойцов конвоя, третий идёт впереди и открывает бус.",
-  "В бусе задержанный сидит не у двери, по бокам — конвой. Разговоры о деле в пути не ведутся.",
-  "Доставление — в здание ФСБ (г. Москва, ул. Большая Лубянка, д. 27). Время доставления фиксируется.",
-  "До передачи следователю задержанный ни на минуту не остаётся без охраны.",
-]));
-
-// ------------------------------------------------------------------------ X
-add(H1("X. РАЗБОР С РУКОВОДСТВОМ ЗАДЕРЖАННОГО И ПРОКУРОРОМ"));
-add(H2("10.1. Уведомления"));
-add(BL([
-  "Сразу после доставления руководитель мероприятия уведомляет руководство ведомства задержанного и прокурора (п. «а» ст. 9, ст. 18 ФЗ «О ФСБ»; Приложение 6).",
-  "На разбор в здание ФСБ приглашаются руководитель ведомства (или его заместитель) и прокурор. Адвокат задержанного — по его требованию.",
-]));
-
-add(H2("10.2. Регламент разбора"));
-add(NL([
-  "**Открытие** (руководитель мероприятия): «Товарищи, проводится ознакомление руководства [[ведомства]] и представителя прокуратуры с результатами мероприятия УСБ-М. Слово — оперуполномоченному [[фамилия]]».",
-  "**Официальное сообщение** — зачитывает докладчик (п. 10.4).",
-  "**Доклад следователя:** доказательства по перечню (служебное задание, протокол пометки, видеозапись передачи, протокол задержания и досмотра, результаты УФ-исследования, пояснения задержанного) и фабула подозрения (п. 10.3).",
-  "**Вопросы** прокурора и адвоката — ответы по п. 10.7.",
-  "**Позиция руководства ведомства.**",
-  "**Решение** (п. 10.6) объявляет следователь или руководитель мероприятия.",
-  "**Закрытие:** «Разбор окончен. Материалы переданы [[кому]]. Благодарю за взаимодействие».",
-]));
-
-add(H2("10.3. Фабула подозрения"));
-add(SCRIPT("Читает следователь", [
-  "«[[Фамилия Имя Отчество]], [[дата рождения]] года рождения, являясь должностным лицом — [[должность]] [[ведомство]], [[дата]] около [[время]], находясь при исполнении служебных обязанностей по адресу: г. Москва, [[место]], действуя умышленно, из корыстных побуждений, осознавая общественную опасность своих действий, предвидя неизбежность наступления общественно опасных последствий и желая их наступления, лично получил от [[гражданина … / лица, участвовавшего в оперативном эксперименте]] взятку в виде денег в размере [[сумма]] рублей за [[незаконное бездействие — непривлечение к ответственности за … / совершение действий …]], входящее в его служебные полномочия.",
-  "Своими действиями [[Фамилия И.О.]] совершил преступление, предусмотренное частью первой статьи 15.4 Уголовного кодекса РО, — получение взятки.»",
-]));
-add(P("Формулировка умысла дословно соответствует ч. 2 ст. 2.6 УК РО (прямой умысел). Все элементы — кто, когда, где, что, сколько, за что, статья — обязательны.", { size: 21, italics: true, before: 80 }));
-
-add(H2("10.4. Официальное сообщение — основной текст"));
-add(P("Текст построен так же, как официальные сообщения ФСБ: кто задержал, кого, при каких обстоятельствах, что возбуждено, что происходит дальше. Докладчик читает его стоя, в начале разбора.", { keepNext: true }));
-add(SCRIPT("Читает докладчик", [
-  "«Сотрудниками Управления собственной безопасности Федеральной службы безопасности по городу Москва во взаимодействии с подразделениями специального назначения „Альфа“ и „Вымпел“ в ходе оперативно-розыскного мероприятия задержан с поличным [[должность]] [[ведомство]] [[звание]] [[Фамилия И.О.]], [[год]] года рождения, при получении взятки в размере [[сумма]] рублей.",
-  "По имеющимся данным, денежные средства предназначались за [[непривлечение гражданина к ответственности за … / общее покровительство … / совершение действий в пользу взяткодателя]].",
-  "Следственным отделом ФСБ по городу Москва в отношении задержанного возбуждено уголовное дело по признакам преступления, предусмотренного частью первой статьи 15.4 Уголовного кодекса РО („Получение взятки“).",
-  "Руководство [[ведомства]] и органы прокуратуры уведомлены. Проводятся следственные действия, направленные на установление иных эпизодов противоправной деятельности и возможных соучастников.»",
-], { size: 24 }));
-add(P("При отложенной реализации (вариант «Б») слова «с поличным» не используются: «…задержан [[должность]] [[ведомство]] [[Фамилия И.О.]], подозреваемый в получении взятки в размере [[сумма]] рублей».", { size: 21, italics: true, before: 80 }));
-
-add(H2("10.5. Варианты официального сообщения"));
-add(SCRIPT("Группа лиц", [
-  "«…задержаны с поличным [[должность]] [[Фамилия И.О.]] и [[должность]] [[Фамилия И.О.]], которые, действуя группой лиц по предварительному сговору, получили взятку в размере [[сумма]] рублей за [[…]]. Возбуждено уголовное дело по признакам преступления, предусмотренного частью первой статьи 15.4 УК РО. Совершение преступления группой лиц по предварительному сговору учитывается как отягчающее обстоятельство (пункт „а“ части первой статьи 5.9 УК РО).»",
-]));
-add(SP(80));
-add(SCRIPT("Превышение должностных полномочий", [
-  "«Управлением собственной безопасности ФСБ по городу Москва выявлен факт превышения должностных полномочий [[должность]] [[ведомство]] [[Фамилия И.О.]]. Установлено, что [[дата]] указанное должностное лицо, находясь при исполнении служебных обязанностей, совершило действия, явно выходящие за пределы его полномочий, — [[описание]], что повлекло существенное нарушение прав и законных интересов гражданина. Следственным отделом ФСБ по городу Москва возбуждено уголовное дело по признакам преступления, предусмотренного частью первой статьи 15.1 УК РО („Превышение должностных полномочий“).»",
-]));
-add(SP(80));
-add(SCRIPT("Покушение на дачу взятки — сотрудник отказался и сообщил в ФСБ", [
-  "«…задержан гражданин [[Фамилия И.О.]], [[год]] года рождения, пытавшийся передать [[должность, ведомство]] взятку в размере [[сумма]] рублей за [[…]]. Сотрудник от получения денежных средств отказался и сообщил о случившемся в ФСБ. Возбуждено уголовное дело по признакам преступления, предусмотренного частью первой статьи 15.5 УК РО со ссылкой на статью 3.1 УК РО (покушение на дачу взятки). Руководству [[ведомства]] направлено представление о поощрении добросовестного сотрудника.»",
-]));
-
-add(H2("10.6. Решение по итогам разбора"));
-add(BL([
-  "**Наказание** назначается ФСБ в пределах санкции ч. 1 ст. 15.4 УК РО: штраф от 50 000 до 100 000 рублей либо лишение свободы на срок до 40 месяцев (ч. 1 ст. 5.3). При совокупности преступлений — по ст. 5.7 (общий срок — не более 50 месяцев).",
-  "**Судимость и залог.** Получение взятки — тяжкое преступление: при аресте создаётся запись о судимости (ч. 3 ст. 5.16), в выходе под залог отказывается (п. «д» ч. 3 ст. 5.17).",
-  "**Смягчающие обстоятельства:** явка с повинной, активное способствование раскрытию, изобличение соучастников (п. «г» ст. 5.8). Досудебное соглашение о сотрудничестве позволяет назначить наказание ниже низшего предела (ст. 5.10). Это инструмент раскрытия коррупционных цепочек: предлагать законно и без давления.",
-  "**Отягчающие обстоятельства:** группа лиц (п. «а» ч. 1 ст. 5.9), рецидив (п. «й» ч. 1 ст. 5.9). Служебное положение — признак состава ст. 15.4, как отягчающее оно не учитывается (ч. 2 ст. 5.9).",
-  "**Увольнение** с лишением званий и запрет занимать должности назначает только суд (ч. 3 ст. 5.3). Поэтому материалы направляются руководству ведомства для решения о дисциплинарной ответственности, а при необходимости дополнительного наказания — в суд.",
-]));
-
-add(H2("10.7. Ответы на типовые вопросы"));
-add(T([3000, CW - 3000], ["Вопрос", "Ответ — со ссылкой на норму"], [
-  ["«Это провокация взятки!» (адвокат)", "«Нет. Мероприятие проведено по постановлению от [[дата]], Клиент действовал по служебному заданию (ч. 3 ст. 4.3 УК РО). Предложение сделано однократно [требование исходило от объекта], объект мог отказаться и доложить руководству. На непрерывной записи видно, что решение он принял сам»."],
-  ["«Клиент сам дал взятку — привлекайте и его!» (адвокат)", "«Сотрудник УСБ-М действовал в рамках операции по выявлению коррупционных правонарушений при наличии служебного задания и видеофиксации. Уголовной ответственности не подлежит (ч. 3 ст. 4.3 УК РО)»."],
-  ["«На каком основании задержан сотрудник другого ведомства?» (руководство)", "«Пункт „в“ ст. 9, пункты „в“ и „у“ ст. 10 ФЗ „О ФСБ“: выявление коррупции и надзор за органами власти — компетенция ФСБ. Подозрение — ч. 1 ст. 15.4 УК РО»."],
-  ["«Почему применялись оружие и наручники?» (прокурор)", "«Объект — вооружённое должностное лицо, подозреваемое в тяжком преступлении. Наручники — п. „г“, „д“ ч. 1 ст. 14, физическая сила — п. „б“ ч. 1 ст. 15 ФЗ „О ФСБ“. Оружие демонстрировалось, но не применялось»."],
-  ["«Разъяснены ли права?» (прокурор)", "«Да, в [[время]], под видеозапись. Задержанный заявил, что права понятны [потребовал адвоката в [[время]], адвокат допущен в [[время]]]»."],
-  ["«Где доказательства передачи?» (прокурор)", "«Непрерывная видеозапись с двух ракурсов, протокол пометки от [[дата]], изъятые купюры с надписью „ВЗЯТКА“, смывы с рук, пояснения задержанного»."],
-  ["«Почему нас не уведомили заранее?» (руководство)", "«В целях конспирации (п. „д“ ст. 3 ФЗ „О ФСБ“). Уведомление направлено немедленно после задержания»."],
+add(H2("Ответы на типовые вопросы"));
+add(PN("Ответы готовятся заранее:", { keepNext: true }));
+add(T([3100, CW - 3100], ["Вопрос", "Ответ"], [
+  ["«Это провокация!» (адвокат)", "«Инициатива исходила от должностного лица: его требование зафиксировано на записи. Сотрудник УСБ-М действовал пассивно, по служебному заданию (ч. 3 ст. 4.3 УК РО). Оценку доказательствам даст прокуратура»."],
+  ["«Привлекайте и того, кто передал деньги!» (адвокат)", "«Сотрудник УСБ-М действовал в рамках операции по выявлению коррупционных правонарушений, при наличии служебного задания и видеофиксации. Уголовной ответственности он не подлежит (ч. 3 ст. 4.3 УК РО)»."],
+  ["«Он виновен?» (руководство)", "«Вину устанавливает не ФСБ. Мы задокументировали факты и задержали по подозрению. Решение примет прокуратура»."],
+  ["«На каком основании задержан сотрудник другого ведомства?» (руководство)", "«По подозрению в совершении преступления, предусмотренного ч. 1 ст. 15.4 УК РО, в пределах компетенции ФСБ (п. „в“ ст. 9, п. „в“, „у“ ст. 10 ФЗ „О ФСБ“)»."],
+  ["«Почему оружие и наручники?» (прокурор)", "«Должностное лицо было вооружено и подозревается в тяжком преступлении. Наручники — п. „г“, „д“ ч. 1 ст. 14, физическая сила — п. „б“ ч. 1 ст. 15 ФЗ „О ФСБ“. Оружие демонстрировалось, но не применялось»."],
+  ["«Разъяснены ли права?» (прокурор)", "«Да, в [[время]], под видеозапись; отметка — в протоколе задержания»."],
+  ["«Какие материалы?» (прокурор)", "«Видеозаписи с двух ракурсов, акты досмотра, пометки и оперативного эксперимента, протокол задержания, результаты ультрафиолетового исследования. Всё передаётся вам»."],
+  ["«Почему нас не уведомили заранее?» (руководство)", "«В целях конспирации (п. „д“ ст. 3 ФЗ „О ФСБ“). Уведомление направлено сразу после задержания»."],
 ], { firstBold: true }));
 
-add(H2("10.8. Как читать вслух"));
-add(BL([
-  "Текст готовится заранее, все поля заполняются до разбора. Прочитать вслух 2–3 раза до выхода.",
-  "Читать стоя, ровным голосом, в среднем темпе, без эмоций — «голосом диктора».",
-  "Пауза перед ФИО и перед номером статьи. ФИО и статья произносятся раздельно и полностью: «часть первая статьи пятнадцать точка четыре».",
-  "Не отвечать на реплики задержанного во время чтения. Вопросы — после.",
-  "Смотреть на руководство ведомства и прокурора, а не в текст и не на задержанного.",
-]));
-
-// ------------------------------------------------------------------------ XI
-add(H1("XI. ТИПИЧНЫЕ ОШИБКИ"));
-add(T([3000, 3100, CW - 6100], ["Ошибка", "Последствие", "Как правильно"], [
-  ["Захват до фактической передачи денег", "Только покушение, спор о провокации, риск ст. 16.5 УК РО", "Реализация только после «ПОДАРОК ВРУЧЁН»"],
-  ["Клиент уговаривает, настаивает, повторяет предложение", "Провокация, развал дела, жалоба", "Одно предложение; при отказе — «ОТБОЙ»"],
-  ["Нет служебного задания или записи", "Клиент теряет защиту ч. 3 ст. 4.3 и сам становится взяткодателем (ст. 15.5)", "Документы — до выхода, запись — непрерывная"],
-  ["Все кричат одновременно", "Объект «не слышит» команд, на видео хаос", "Правило одного голоса"],
-  ["Нет обозначения «РАБОТАЕТ ФСБ!»", "Задержание принимают за нападение, возможен ответный огонь", "Обозначение — первая команда"],
-  ["Объекту дали избавиться от денег", "Потеряно главное доказательство", "Контроль рук с первой секунды"],
-  ["Табельное оружие объекта не изъято сразу", "Угроза жизни ГЗ", "Изъятие оружия — первое действие после укладывания"],
-  ["Мат, оскорбления, удары по лежащему", "Превышение (ст. 15.1), жалобы, позор отдела", "Жёстко до контроля, вежливо после"],
-  ["Вопросы с угрозами", "Ст. 16.6 УК РО, показания недопустимы", "Вопросы по скрипту, право на молчание"],
-  ["Права не разъяснены, адвокату отказано", "Ст. 9.2 УК РО, жалоба, недопустимость показаний", "Разъяснение прав под запись"],
-  ["Руководство объекта узнало заранее", "Утечка, объект предупреждён", "Уведомлять в последний момент и минимально"],
+// ------------------------------------------------------------------------ X
+add(H1("X. ТИПИЧНЫЕ ОШИБКИ"));
+add(T([3000, 3150, CW - 6150], ["Ошибка", "Последствие", "Как правильно"], [
+  ["Клиент первым предлагает деньги", "Провокация, материалы ничего не стоят", "Инициатива — только от объекта"],
+  ["Захват до фактической передачи денег", "Нет факта получения, риск ст. 16.5 УК РО", "Реализация только после «ПОДАРОК ВРУЧЁН»"],
+  ["Нет служебного задания или записи", "Клиент теряет защиту ч. 3 ст. 4.3 УК РО", "Документы — до выхода, запись непрерывная"],
+  ["«Взяточник», «виновен» в докладах и сообщениях", "Нарушение презумпции невиновности, жалобы", "«Подозреваемый», «по имеющимся данным»"],
+  ["Кричат все одновременно", "Объект не слышит команд, на видео хаос", "Правило одного голоса"],
+  ["Нет обозначения «РАБОТАЕТ ФСБ!»", "Задержание принимают за нападение", "Обозначение — первая команда"],
+  ["Объект избавился от денег", "Потеряно главное доказательство", "Контроль рук с первой секунды"],
+  ["Табельное оружие объекта не изъято сразу", "Угроза жизни ГЗ", "Изъятие оружия — сразу после укладывания"],
+  ["Мат, оскорбления, удары по лежащему", "Превышение (ст. 15.1 УК РО), жалобы", "Жёстко до контроля, вежливо после"],
+  ["Вопросы с угрозами", "Ст. 16.6 УК РО, показания ничего не стоят", "Вопросы по скрипту, право на молчание"],
+  ["Права не разъяснены, адвокату отказано", "Ст. 9.2 УК РО, жалоба", "Разъяснение прав под запись"],
+  ["Руководство объекта узнало заранее", "Утечка, объект предупреждён", "Уведомлять в последний момент"],
   ["Докладчик впервые читает текст на разборе", "Запинки, ошибки в ФИО и статьях", "Текст готовится заранее, репетиция"],
-  ["Разбор без прокурора и без уведомления ведомства", "Межведомственный конфликт, обжалование", "Уведомления по Приложению 6"],
   ["Задержан однофамилец", "Ст. 16.5 УК РО", "ФИО + дата рождения + документы + видео"],
 ]));
 
-// ------------------------------------------------------------------------ XII
-add(H1("XII. ПРОГРАММА ТРЕНИРОВКИ"));
-add(H2("12.1. Цель и участники"));
-add(P("**Цель:** отработать полный цикл мероприятия от инструктажа до официального сообщения, научить слушателей Академии УСБ-М речевым шаблонам и сработать ГЗ «Альфы» и «Вымпела» под руководством УСБ-М."));
-add(T([3000, 1200, CW - 4200], ["Роль", "Человек", "Кто"], [
+// ------------------------------------------------------------------------ XI
+add(H1("XI. ПРОГРАММА ТРЕНИРОВКИ"));
+add(PN("**Цель:** отработать полный цикл мероприятия от инструктажа до передачи материалов, научить слушателей Академии УСБ-М речевым шаблонам и языку подозрения, сработать ГЗ «Альфы» и «Вымпела» под руководством УСБ-М."));
+add(PN("Участники:", { keepNext: true }));
+add(T([3700, 1200, CW - 4900], ["Роль", "Человек", "Кто"], [
   ["Руководитель тренировки", "1", "Руководитель ССКБ"],
-  ["Посредники (оценщики)", "1–2", "Опытные сотрудники УСБ-М с оценочными листами (п. 12.5)"],
-  ["Слушатели Академии УСБ-М", "все", "По очереди в ролях: Клиент, «Сокол», докладчик, видеооператор, следователь"],
-  ["Группа захвата", "20", "Бойцы «Альфы» и «Вымпела» (распределение — п. 3.2)"],
-  ["Статист «Объект»", "1", "Опытный сотрудник, действует по вводным руководителя (п. 12.4)"],
+  ["Посредники (оценщики)", "1–2", "Опытные сотрудники УСБ-М с оценочными листами"],
+  ["Слушатели Академии УСБ-М", "все", "По очереди: Клиент, Сокол, докладчик, видеооператор, следователь"],
+  ["Группа захвата", "20", "Бойцы «Альфы» и «Вымпела»"],
+  ["Статист «объект»", "1", "Опытный сотрудник, действует по вводным"],
   ["Статисты «коллеги объекта»", "2", "Для сценария № 3"],
   ["Статист «руководитель ведомства»", "1", "Для сценариев № 3 и № 5"],
-  ["«Прокурор», «адвокат»", "1 + 1", "Лучше пригласить действующих сотрудников прокуратуры и адвокатуры: заодно тренировка взаимодействия"],
+  ["«Прокурор», «адвокат»", "1 + 1", "Лучше пригласить действующих сотрудников прокуратуры и адвокатов"],
 ], { firstBold: true, center: [1] }));
-
-add(H2("12.2. Место и меры безопасности"));
-add(BL([
-  "Тренировка проводится на закрытой территории ФСБ или в согласованном месте без посторонних граждан.",
-  "В радиоэфире каждое сообщение начинается со слова **«УЧЕБНАЯ»**.",
-  "(OOC) Оружие не применяется. Порядок учений с оружием — по правилам сервера и фракции.",
-]));
-
-add(H2("12.3. План тренировки"));
-add(T([450, 2650, 650, 4000, CW - 7750], ["№", "Блок", "Мин", "Содержание", "Ведёт"], [
-  ["1", "Построение и постановка задачи", "10", "Доклад о численности, цели, распределение ролей и подгрупп, позывные", "Руководитель"],
-  ["2", "Теория", "15", "Правовая основа (II), роли (III), сигналы (V); для ГЗ — команды (VI), пределы силы и оружия", "Руководитель, старший опер"],
-  ["3", "Речевая подготовка слушателей", "15", "Каждый слушатель: скрипт установления личности (VII), объявление о задержании и права (VIII), официальное сообщение (X)", "Посредники"],
-  ["4", "Отработка ГЗ «на сухую»", "10", "Выход из бусов, подгруппы, правило одного голоса, укладывание статиста, наручники, изъятие оружия, доклад. Норматив — 30 с", "Командир ГЗ"],
-  ["5", "Сценарий № 1 «Чистое задержание»", "15", "Полный цикл варианта «А»: пометка денег → передача → «ПОДАРОК ВРУЧЁН» → «РЕАЛИЗАЦИЯ» → захват → ФИО и дата рождения → права → досмотр с УФ → доставление", "Все"],
-  ["6", "Сценарий № 2 «Сопротивление»", "10", "Объект пытается сбросить деньги и уйти; ГЗ пресекает", "ГЗ, слушатели"],
-  ["7", "Сценарий № 3 «Вмешательство коллег»", "15", "Вариант «Б»: работа через руководство, вызов объекта, захват в помещении, отсечение коллег", "Все"],
-  ["8", "Сценарий № 4 «Отказ от взятки»", "5", "Объект отказывается, Клиент не настаивает, «ОТБОЙ», положительный результат проверки", "Клиент, руководитель"],
-  ["9", "Сценарий № 5 «Разбор»", "15", "Официальное сообщение, фабула, ответы на вопросы «прокурора» и «адвоката»", "Слушатели, следователь"],
-  ["10", "Подведение итогов", "10", "Ошибки по оценочным листам, лучшие слушатели, задачи на следующую тренировку", "Руководитель, посредники"],
-  ["", "**Итого**", "**120**", "", ""],
+add(SP());
+add(PN("Тренировка проводится на закрытой территории ФСБ или в согласованном месте без посторонних граждан. Каждое сообщение в эфире начинается со слова «УЧЕБНАЯ». (OOC) Порядок учений с оружием — по правилам сервера и фракции."));
+add(PN("План тренировки (120 минут):", { keepNext: true }));
+add(T([500, 3000, 800, CW - 4300], ["№", "Блок", "Мин", "Содержание"], [
+  ["1", "Постановка задачи", "10", "Доклад о численности, цели, роли, подгруппы, позывные"],
+  ["2", "Теория", "15", "Реальная практика (II), сигналы (IV), команды и пределы силы (VII), язык подозрения (IX)"],
+  ["3", "Речевая подготовка", "15", "Каждый слушатель читает тексты 3, 4, 7 и 8 Приложения 1"],
+  ["4", "ГЗ «на сухую»", "10", "Выход из бусов, подгруппы, один голос, укладывание, наручники, доклад. Норматив — 30 с"],
+  ["5", "Сценарий № 1 «Чистое задержание»", "15", "Вариант «А» полностью: досмотр Клиента и пометка денег → передача → захват → ФИО и дата рождения → права → обыск → доставление"],
+  ["6", "Сценарий № 2 «Сопротивление»", "10", "Объект пытается сбросить деньги и уйти, ГЗ пресекает"],
+  ["7", "Сценарий № 3 «Вмешательство коллег»", "15", "Вариант «Б»: работа через руководство, захват в помещении, отсечение коллег"],
+  ["8", "Сценарий № 4 «Нет инициативы»", "5", "Объект не требует денег, Клиент не предлагает, «ОТБОЙ»"],
+  ["9", "Сценарий № 5 «Разбор»", "15", "Официальное сообщение, доклад, вопросы «прокурора» и «адвоката», передача материалов"],
+  ["10", "Итоги", "10", "Ошибки по оценочным листам, лучшие слушатели"],
 ], { center: [0, 2] }));
-
-add(H2("12.4. Вводные для статистов"));
-add(T([2300, 2600, 2400, CW - 7300], ["Сценарий", "«Объект»", "Другие статисты", "Что проверяем"], [
-  ["№ 1 «Чистое задержание»", "Берёт деньги, при захвате выполняет команды, называет данные", "—", "Полный цикл, скрипты, норматив времени"],
-  ["№ 2 «Сопротивление»", "После «Работает ФСБ!» пытается сбросить деньги и уйти (/try); после предупреждения подчиняется", "—", "Контроль рук, предупреждение о применении силы, пределы силы"],
-  ["№ 3 «Вмешательство коллег»", "На смене в здании ведомства, вызван руководителем «на совещание»", "«Руководитель» сначала сопротивляется запросу; «коллеги»: «Вы кто такие? Отпустите его!»", "Работа через руководство, блокирование, ч. 2 ст. 17.8"],
-  ["№ 4 «Отказ»", "Отказывается от денег, выписывает Клиенту штраф", "—", "Клиент не настаивает, «ОТБОЙ», оплата штрафа (ст. 17.7)"],
-  ["№ 5 «Разбор»", "Молчит, требует адвоката", "«Прокурор», «адвокат», «руководитель ведомства» задают вопросы из п. 10.7", "Зачитка, фабула, ответы со ссылкой на норму"],
+add(SP());
+add(PN("Вводные для статистов:", { keepNext: true }));
+add(T([2900, 3300, CW - 6200], ["Сценарий", "Что делает статист", "Что проверяем"], [
+  ["№ 1 «Чистое задержание»", "Требует деньги, берёт их, при захвате выполняет команды", "Полный цикл, скрипты, время"],
+  ["№ 2 «Сопротивление»", "Пытается сбросить деньги и уйти (/try), после предупреждения подчиняется", "Контроль рук, предупреждение о силе, пределы силы"],
+  ["№ 3 «Вмешательство коллег»", "«Руководитель» сначала сопротивляется запросу; «коллеги»: «Вы кто такие? Отпустите его!»", "Работа через руководство, блокирование, ч. 2 ст. 17.8 УК РО"],
+  ["№ 4 «Нет инициативы»", "Ведёт себя корректно, денег не требует, выписывает штраф", "Клиент не предлагает денег, «ОТБОЙ», оплата штрафа"],
+  ["№ 5 «Разбор»", "Молчит, требует адвоката; «прокурор» спрашивает: «Он виновен?», «Где провокация?»", "Язык подозрения, ответы со ссылкой на норму"],
 ], { firstBold: true }));
-
-add(H2("12.5. Оценочный лист слушателя"));
-add(T([500, CW - 1900, 1400], ["№", "Критерий", "Да / нет"], [
-  ["1", "Называет норму-основание своего действия по вопросу посредника", ""],
-  ["2", "Правильно подаёт и принимает условные сигналы", ""],
-  ["3", "Скрипт установления личности — полностью и по порядку", ""],
+add(SP());
+add(PN("Оценочный лист слушателя (зачёт — 8 из 10):", { keepNext: true }));
+add(T([600, CW - 2100, 1500], ["№", "Критерий", "Да / нет"], [
+  ["1", "Называет норму-основание своего действия", ""],
+  ["2", "Правильно подаёт и принимает сигналы", ""],
+  ["3", "Опрос для установления личности — полностью и по порядку", ""],
   ["4", "Объявление о задержании без ошибок в ФИО и статье", ""],
-  ["5", "Права разъяснены полностью, задан вопрос «Вам понятны ваши права?»", ""],
-  ["6", "Досмотр — с предложением добровольно выдать, под запись", ""],
-  ["7", "Официальное сообщение — без запинок, в темпе, с паузами", ""],
-  ["8", "Фабула содержит все элементы: кто, когда, где, что, сколько, за что, статья", ""],
+  ["5", "Права разъяснены полностью", ""],
+  ["6", "Перед обыском предложено добровольно выдать, всё под запись", ""],
+  ["7", "Официальное сообщение — без запинок, в темпе", ""],
+  ["8", "Использует только формулировки подозрения", ""],
   ["9", "Корректный тон, нет оскорблений и угроз", ""],
-  ["10", "Ответ на вопрос «прокурора» со ссылкой на норму", ""],
-  ["", "**Зачёт — 8 из 10**", ""],
+  ["10", "Отвечает «прокурору» со ссылкой на норму", ""],
 ], { center: [0, 2] }));
-
-add(H2("12.6. Нормативы группы захвата"));
-add(T([5600, CW - 5600], ["Показатель", "Норматив"], [
+add(SP());
+add(PN("Нормативы группы захвата:", { keepNext: true }));
+add(T([5800, CW - 5800], ["Показатель", "Норматив"], [
   ["Время от «РЕАЛИЗАЦИЯ» до «объект под контролем»", "≤ 30 с (отлично ≤ 20 с)"],
-  ["Обозначение «РАБОТАЕТ ФСБ!» первой командой", "Обязательно"],
+  ["«РАБОТАЕТ ФСБ!» — первой командой", "Обязательно"],
   ["Правило одного голоса", "Нарушений нет"],
-  ["Оружие объекта изъято первым действием после укладывания", "Да"],
-  ["Предмет взятки сохранён до изъятия следователем", "Да"],
-  ["Блокирование отсекло посторонних и коллег объекта", "Никто не прошёл к объекту"],
+  ["Оружие объекта изъято сразу после укладывания", "Да"],
+  ["Деньги сохранены до изъятия следователем", "Да"],
+  ["Посторонние и коллеги объекта не прошли к точке", "Да"],
   ["Удары, мат, оскорбления", "0"],
   ["Клиент уложен вместе со всеми и выведен как свидетель", "Да"],
 ]));
 
+// ------------------------------------------------------------------------ Источники
+add(H1("СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ", { id: "istochniki" }));
+add(P("Законодательство РО:", { noIndent: true, bold: true, keepNext: true }));
+add(SUB([
+  "Федеральный закон «О Федеральной службе безопасности».",
+  "Уголовный кодекс РО.",
+]));
+add(P("Реальная практика (образец для настоящих рекомендаций):", { noIndent: true, bold: true, before: 120, keepNext: true }));
+add(SUB([
+  "Федеральный закон от 12.08.1995 № 144-ФЗ «Об оперативно-розыскной деятельности» (ст. 5, 6, 7, 8, 11).",
+  "Уголовно-процессуальный кодекс Российской Федерации (ст. 46, 91, 92, 143).",
+  "Инструкция о порядке представления результатов оперативно-розыскной деятельности органу дознания, следователю или в суд, утверждённая приказом МВД России, Минобороны России, ФСБ России, ФСО России, ФТС России, СВР России, ФСИН России, ФСКН России, СК России от 27.09.2013 № 776/703/509/507/1820/42/535/398/68.",
+  "Постановление Пленума Верховного Суда РФ от 09.07.2013 № 24 «О судебной практике по делам о взяточничестве и об иных коррупционных преступлениях».",
+], { start: 3 }));
+
 // ================================================================= ПРИЛОЖЕНИЯ
-// 1. Рапорт
-add(APPX(1, "Рапорт об обнаружении признаков преступления"));
+// 1. Тексты для зачитывания
+add(APPX(1, "Тексты для зачитывания"));
+add(P("ТЕКСТЫ ДЛЯ ЗАЧИТЫВАНИЯ", { align: CE, noIndent: true, bold: true, after: 120 }));
+add(P("Все поля в квадратных скобках заполняются до начала мероприятия. Текст читается ровно, в среднем темпе, с паузой перед ФИО и номером статьи.", { after: 240 }));
+add(SCRIPT("Текст 1. Инструктаж", "Читает руководитель мероприятия", [
+  "«Товарищи офицеры! Проводится оперативно-розыскное мероприятие „оперативный эксперимент“ в отношении должностного лица [[ведомство]]. Основание — постановление от [[дата]] № [[номер]].",
+  "Руководитель мероприятия — [[звание, фамилия]]. С этой минуты приданные силы „Альфы“ и „Вымпела“ находятся в моём оперативном подчинении. Командир группы захвата — [[фамилия]].",
+  "Работаем на канале [[номер]]. Передача состоялась — „ПОДАРОК ВРУЧЁН“. Задержание — „РЕАЛИЗАЦИЯ“. Отмена — „ОТБОЙ“. „Реализацию“ и „отбой“ подаю только я.",
+  "На задержании команды голосом подаёт только командир группы захвата. Первая команда — „РАБОТАЕТ ФСБ!“. Оружие — в готовности, применять — только при вооружённом сопротивлении или попытке скрыться, если иначе задержать невозможно. Удары, мат, оскорбления запрещены.",
+  "Мероприятие фиксируется на видео от начала до конца. Сведения о нём составляют государственную тайну. Вопросы? Командирам подгрупп — доложить о готовности.»",
+]));
+add(SP());
+add(SCRIPT("Текст 2. Доклады о готовности", "Читают командир ГЗ и Клиент", [
+  "Командир ГЗ: «Гром понял. Сигнал на захват — „Реализация“, первая команда — „Работает ФСБ“, оружие — только по статье 13. Группа к работе готова.»",
+  "Клиент: «Клиент понял. Запись включена. Деньги первым не предлагаю. После передачи — „Спасибо, выручили“. Опасность — „Мне срочно нужно позвонить“.»",
+]));
+add(SP());
+add(SCRIPT("Текст 3. Опрос для установления личности", "Читает докладчик после доклада «объект под контролем»", [
+  "«Фамилия, имя, отчество. Полностью.»",
+  "«Число, месяц, год рождения?»",
+  "«Место службы? Должность, звание?»",
+  "«Оружие, колющие, режущие предметы при себе есть?»",
+  "«Что вы сейчас получили? От кого и за что?»",
+  "«Вам понятно, почему вы задержаны?»",
+]));
+add(SP());
+add(SCRIPT("Текст 4. Объявление о задержании и разъяснение прав (полный)", "Читает докладчик или следователь", [
+  "«Гражданин [[Фамилия Имя Отчество]], [[дата рождения]] года рождения!",
+  "Вы задержаны сотрудниками Федеральной службы безопасности, Управление собственной безопасности по городу Москва, по подозрению в совершении преступления, предусмотренного частью первой статьи 15.4 Уголовного кодекса РО, — получение взятки. Задержание произведено в соответствии с пунктом „в“ статьи 9 и пунктом „в“ статьи 10 Федерального закона „О Федеральной службе безопасности“. Ход задержания фиксируется на видео.",
+  "Вам разъясняются ваши права. Вы вправе не свидетельствовать против себя. При согласии дать показания вы предупреждаетесь о том, что ваши показания могут быть использованы в качестве доказательств, в том числе и при последующем отказе от этих показаний. Вы вправе пользоваться помощью адвоката. Вы вправе обжаловать действия сотрудников ФСБ в вышестоящий орган, прокуратуру или суд. Решение по материалам будет принято прокуратурой.",
+  "Вам понятны ваши права?»",
+]));
+add(SP());
+add(SCRIPT("Текст 5. Объявление о задержании (краткий, на месте)", "Читает докладчик", [
+  "«Вы задержаны ФСБ по подозрению в получении взятки, статья 15.4 УК РО. Вы вправе не свидетельствовать против себя и пользоваться помощью адвоката. Права понятны?»",
+]));
+add(SP());
+add(SCRIPT("Текст 6. Перед личным обыском", "Читает следователь", [
+  "«Сейчас будет проведён ваш личный обыск, он фиксируется на видео. Предлагаю добровольно выдать денежные средства и иные предметы, полученные незаконным путём, а также предметы, запрещённые к обороту. Желаете что-либо выдать?»",
+]));
+add(SP());
+add(SCRIPT("Текст 7. Доклад о результатах мероприятия", "Читает следователь на разборе", [
+  "«По результатам оперативно-розыскных мероприятий получены данные о том, что [[дата]] около [[время]] по адресу: г. Москва, [[место]], [[должность]] [[ведомство]] [[Фамилия Имя Отчество]], [[дата рождения]] года рождения, находясь при исполнении служебных обязанностей, получил от лица, участвовавшего в оперативном эксперименте, денежные средства в сумме [[сумма]] рублей за [[действия или бездействие по службе]].",
+  "Передача денежных средств зафиксирована видеозаписью. Помеченные денежные средства обнаружены и изъяты при личном обыске, на ладонях задержанного выявлены следы специального вещества.",
+  "Указанные действия содержат признаки преступления, предусмотренного частью первой статьи 15.4 Уголовного кодекса РО. [[Фамилия И.О.]] задержан по подозрению в совершении данного преступления.",
+  "Материалы передаются в прокуратуру для принятия процессуального решения.»",
+]));
+add(SP());
+add(SCRIPT("Текст 8. Официальное сообщение", "Читает докладчик в начале разбора; публикуется по Приложению 10", [
+  "«Управлением собственной безопасности ФСБ по городу Москва во взаимодействии с подразделениями специального назначения „Альфа“ и „Вымпел“ в ходе оперативно-разыскных мероприятий задержан [[должность]] [[ведомство]] [[звание]] [[Фамилия И.О.]], [[год]] года рождения, подозреваемый в получении взятки.",
+  "По имеющимся данным, [[дата]] указанное должностное лицо получило от гражданина денежные средства в сумме [[сумма]] рублей за [[непривлечение к ответственности за … / совершение действий в пользу гражданина]]. Передача денежных средств задокументирована с применением средств видеофиксации.",
+  "Материалы оперативно-разыскной деятельности направлены в прокуратуру для принятия процессуального решения. Руководство [[ведомства]] уведомлено.",
+  "Проводятся мероприятия, направленные на установление возможных иных эпизодов противоправной деятельности и причастных лиц.»",
+]));
+add(P("Написание «оперативно-разыскных» — как в официальных сообщениях ФСБ России.", { size: TBL, noIndent: true, before: 80, after: 200 }));
+add(SCRIPT("Текст 9. Варианты официального сообщения", null, [
+  "**Группа лиц:** «…задержаны [[должность]] [[Фамилия И.О.]] и [[должность]] [[Фамилия И.О.]], подозреваемые в получении взятки группой лиц по предварительному сговору. По имеющимся данным, они получили денежные средства в сумме [[сумма]] рублей за [[…]]. Материалы направлены в прокуратуру для принятия процессуального решения.»",
+  "**Превышение полномочий:** «…выявлены признаки превышения должностных полномочий [[должность]] [[ведомство]] [[Фамилия И.О.]]. По имеющимся данным, [[дата]] указанное должностное лицо совершило действия, явно выходящие за пределы его полномочий: [[описание]]. Действия содержат признаки преступления, предусмотренного частью первой статьи 15.1 УК РО. Материалы направлены в прокуратуру.»",
+  "**Попытка дачи взятки сотруднику, который отказался:** «…задержан гражданин [[Фамилия И.О.]], [[год]] года рождения, подозреваемый в попытке передать [[должность, ведомство]] денежные средства в сумме [[сумма]] рублей за [[…]]. Сотрудник от денежных средств отказался и сообщил о случившемся в ФСБ. Материалы направлены в прокуратуру для принятия процессуального решения. Руководству [[ведомства]] направлено представление о поощрении сотрудника.»",
+]));
+
+// 2. Рапорт
+curSize = 26;
+add(APPX(2, "Рапорт"));
 add(RIGHT_BLOCK([
   "Руководителю ССКБ", "Управления собственной безопасности", "по городу Москва", "[[звание, И.О. Фамилия]]",
   "от оперуполномоченного УСБ-М", "[[звание, И.О. Фамилия]]",
 ]));
-add(DOC_TITLE("Р А П О Р Т", "об обнаружении признаков преступления"));
+add(DOC_TITLE("Р А П О Р Т"));
 add(DATE_NO(), CITY());
-add(P("Докладываю, что [[дата]] [[из заявления гражданина / в ходе проверки поступившей информации]] получены сведения о том, что [[должность, ведомство, звание, Ф.И.О. (если известны), нагрудный знак, служебный транспорт]] [[требует от граждан денежные средства / систематически получает незаконное вознаграждение]] за [[действия (бездействие) по службе: непривлечение к ответственности, выдачу документов, покровительство]]."));
-add(P("Указанные сведения содержат признаки преступления, предусмотренного ч. 1 ст. 15.4 УК РО (получение взятки)."));
-add(P("В целях проверки и документирования полученной информации, руководствуясь п. «в» ст. 9, п. «в» ст. 10 ФЗ «О ФСБ», прошу разрешить проведение оперативно-розыскного мероприятия «оперативный эксперимент» с участием легендированного сотрудника УСБ-М и привлечением сил подразделений специального назначения «Альфа» и «Вымпел»."));
-add(P("Приложение: [[заявление гражданина / видеоматериалы / иные материалы]] на [[__]] л."));
+add(P("Докладываю, что [[дата]] [[поступило заявление гражданина / получены оперативные сведения / при первичном контакте с сотрудником УСБ-М, действовавшим под легендой, зафиксировано требование]] о том, что [[должность, ведомство, звание, Ф.И.О. (если известны), нагрудный знак, служебный транспорт]] [[требует / намекает на передачу]] денежных средств за [[действия или бездействие по службе]]."));
+add(P("Полученные сведения содержат признаки преступления, предусмотренного ч. 1 ст. 15.4 УК РО."));
+add(P("В целях проверки и документирования указанных сведений прошу разрешить проведение оперативно-розыскного мероприятия «оперативный эксперимент» с участием сотрудника УСБ-М в роли заявителя и с привлечением сил подразделений специального назначения «Альфа» и «Вымпел»."));
+add(P("Приложение: [[видеозапись первичного контакта / заявление гражданина]] на [[__]] л."));
 add(SIGN(["Оперуполномоченный УСБ-М", "[[специальное звание]]"]));
 
-// 2. Постановление
-add(APPX(2, "Постановление о проведении ОРМ «оперативный эксперимент»"));
+// 3. Постановление о проведении ОЭ
+add(APPX(3, "Постановление о проведении оперативного эксперимента"));
+add(RIGHT_BLOCK(["Секретно (по заполнении), экз. № ___"], { left: 4820, after: 160 }));
 add(RIGHT_BLOCK([
   "УТВЕРЖДАЮ", "Руководитель ССКБ", "Управления собственной безопасности", "по городу Москва",
   "_______________ / [[И.О. Фамилия]]", "«___» ____________ 2026 г.",
@@ -998,192 +849,230 @@ add(RIGHT_BLOCK([
 add(DOC_TITLE("П О С Т А Н О В Л Е Н И Е", "о проведении оперативно-розыскного мероприятия «оперативный эксперимент»"));
 add(DATE_NO(), CITY());
 add(P("[[Должность, специальное звание, И.О. Фамилия]], рассмотрев рапорт от [[дата]] № [[номер]] и материалы проверки,"));
-add(P("У С Т А Н О В И Л :", { align: CE, noIndent: true, bold: true, before: 60, keepNext: true }));
-add(P("[[Изложение сведений: какое должностное лицо, какие действия, когда, где; источник сведений.]]"));
-add(P("Полученные сведения содержат признаки преступления, предусмотренного ч. 1 ст. 15.4 УК РО. Проверить их и задокументировать противоправную деятельность иным способом, кроме оперативного эксперимента, не представляется возможным."));
+add(HEADWORD("У С Т А Н О В И Л :"));
+add(P("[[Какое должностное лицо, какие требования, когда и где; источник сведений.]]"));
+add(P("Полученные сведения содержат признаки преступления, предусмотренного ч. 1 ст. 15.4 УК РО, которое относится к категории тяжких. Проверить их иным способом, кроме оперативного эксперимента, не представляется возможным."));
 add(P("На основании изложенного, руководствуясь п. «в» ст. 9, п. «в», «д», «т» ст. 10 ФЗ «О ФСБ», ч. 3 ст. 4.3 УК РО,"));
-add(P("П О С Т А Н О В И Л :", { align: CE, noIndent: true, bold: true, before: 60, keepNext: true }));
-add(NL([
+add(HEADWORD("П О С Т А Н О В И Л :"));
+add(SUB([
   "Провести оперативно-розыскное мероприятие «оперативный эксперимент» в отношении [[должность, ведомство, Ф.И.О.]] в период с [[дата, время]] по [[дата, время]].",
   "Руководителем мероприятия назначить [[должность, звание, И.О. Фамилия]].",
-  "Легендированным сотрудником («Клиент») назначить [[звание, И.О. Фамилия, № служебного удостоверения]], выдать ему служебное задание.",
-  "Привлечь силы подразделений специального назначения «Альфа» и «Вымпел» в количестве [[__]] человек и передать их на время мероприятия в оперативное подчинение руководителю мероприятия.",
-  "Выделить денежные средства в сумме [[__]] рублей, подлежащие осмотру, пометке и вручению Клиенту по протоколу.",
-  "Ход мероприятия фиксировать с применением видеозаписи.",
-  "Сведения о мероприятии разглашению не подлежат.",
-  "Результаты мероприятия представить руководителю ССКБ не позднее [[срок]].",
-], { left: 1134, hanging: 425 }));
-add(SIGN(["Оперуполномоченный УСБ-М", "[[специальное звание]]"]));
+  "В роли заявителя задействовать [[звание, И.О. Фамилия, № служебного удостоверения]], выдать служебное задание.",
+  "Привлечь силы подразделений специального назначения «Альфа» и «Вымпел» в количестве [[__]] человек в оперативном подчинении руководителя мероприятия.",
+  "Выделить денежные средства в сумме [[__]] рублей для осмотра, пометки и вручения по акту.",
+  "Ход мероприятия фиксировать с применением видеозаписи. Результаты представить руководителю ССКБ не позднее [[срок]].",
+]));
+add(SIGN(["Оперуполномоченный УСБ-М [[специальное звание]]"]));
 
-// 3. Служебное задание
-add(APPX(3, "Служебное задание легендированному сотруднику"));
+// 4. Служебное задание
+add(APPX(4, "Служебное задание"));
 add(LETTERHEAD());
 add(DOC_TITLE("С Л У Ж Е Б Н О Е   З А Д А Н И Е"));
 add(DATE_NO(), CITY());
-add(P("**Выдано:** [[звание, И.О. Фамилия, № служебного удостоверения]], сотруднику УСБ-М.", { noIndent: true }));
-add(P("**Основание:** постановление о проведении ОРМ «оперативный эксперимент» от [[дата]] № [[номер]].", { noIndent: true }));
-add(P("В рамках операции по выявлению коррупционных правонарушений **ПОРУЧАЕТСЯ:**", { noIndent: true, before: 80, keepNext: true }));
-add(NL([
-  "Под легендой [[описание легенды: гражданин, водитель транспортного средства …]] вступить в контакт с [[должность, ведомство, приметы объекта]].",
-  "В случае выдвижения объектом требования о передаче денежных средств [[либо: однократно предложить объекту решить вопрос за денежное вознаграждение]] передать объекту денежные средства в сумме [[__]] рублей, осмотренные и помеченные согласно протоколу от [[дата]].",
-  "Не допускать склонения, уговоров, повторных предложений и давления на объект. При отказе объекта прекратить мероприятие и подчиниться законным требованиям объекта.",
+add(FIELD("Выдано", "[[звание, И.О. Фамилия, № служебного удостоверения]], сотруднику УСБ-М."));
+add(FIELD("Основание", "постановление о проведении оперативного эксперимента от [[дата]] № [[номер]]."));
+add(P("В рамках операции по выявлению коррупционных правонарушений **поручается:**", { noIndent: true, before: 120, keepNext: true }));
+add(SUB([
+  "Под легендой [[гражданин, водитель транспортного средства …]] вступить в контакт с [[должность, ведомство, приметы объекта]].",
+  "Денежные средства первым не предлагать. При требовании или намёке объекта согласиться и передать денежные средства в сумме [[__]] рублей, помеченные по акту от [[дата]].",
+  "Не склонять объект к получению денег, не уговаривать, не повторять предложений, не оказывать давления. При отказе объекта прекратить мероприятие и выполнить его законные требования.",
   "Обеспечить непрерывную видеозапись контакта.",
   "После передачи подать условный сигнал и действовать по командам группы захвата.",
 ]));
-add(P("Разъяснено: действия, совершённые в рамках настоящего задания при наличии видеофиксации, не влекут уголовной ответственности на основании ч. 3 ст. 4.3 УК РО. Действия, выходящие за пределы задания, влекут ответственность на общих основаниях.", { before: 80 }));
+add(P("Разъяснено: действия в рамках настоящего задания при наличии видеофиксации не влекут уголовной ответственности (ч. 3 ст. 4.3 УК РО). Действия за пределами задания влекут ответственность на общих основаниях.", { before: 120 }));
 add(P("Срок действия задания: до [[дата, время]].", { noIndent: true }));
 add(SIGN(["Задание выдал:", "Руководитель ССКБ"]));
 add(SIGN(["Задание получил, содержание и пределы разъяснены:"]));
 
-// 4. Протокол пометки
-add(APPX(4, "Протокол осмотра, пометки и вручения денежных средств"));
+// 5. Акт досмотра, пометки и вручения
+add(APPX(5, "Акт досмотра, пометки и вручения денежных средств"));
 add(LETTERHEAD());
-add(DOC_TITLE("П Р О Т О К О Л", "осмотра, пометки и вручения денежных средств"));
+add(DOC_TITLE("А К Т", "личного досмотра, осмотра, пометки и вручения денежных средств и технических средств"));
 add(DATE_NO(), CITY());
-add(P("Начало: [[__ ч __ мин]]. Окончание: [[__ ч __ мин]].", { noIndent: true }));
-add(P("[[Должность, звание, И.О. Фамилия]] в соответствии с постановлением от [[дата]] № [[номер]], с участием [[И.О. Фамилия участвующих лиц]], с применением видеозаписи и ультрафиолетового осветителя произвёл осмотр, пометку и вручение денежных средств."));
-add(P("Осмотру подвергнуты денежные средства в сумме [[__]] рублей купюрами достоинством [[__]] рублей в количестве [[__]] шт. Купюры обработаны специальным химическим веществом (люминесцентным порошком). На каждой купюре специальным карандашом выполнена надпись «ВЗЯТКА», видимая в ультрафиолетовом свете. Образец вещества упакован в конверт и опечатан."));
-add(T([700, 2600, CW - 3300], ["№", "Достоинство, руб.", "Серия и номер купюры"], [
+add(P("Начат в [[__ ч __ мин]], окончен в [[__ ч __ мин]].", { noIndent: true }));
+add(P("[[Должность, звание, И.О. Фамилия]] на основании постановления от [[дата]] № [[номер]], с применением видеозаписи и ультрафиолетового осветителя, с участием [[представители общественности — при наличии]], составил настоящий акт о следующем."));
+add(P("**1. Личный досмотр.** Произведён личный досмотр [[звание, И.О. Фамилия]]. Денежных средств и запрещённых предметов не обнаружено. При себе имелось: [[перечень]]."));
+add(P("**2. Осмотр и пометка.** Осмотрены денежные средства в сумме [[__]] рублей купюрами достоинством [[__]] рублей в количестве [[__]] шт. Номера купюр указаны в таблице. Купюры обработаны специальным химическим веществом [[наименование, например «Тушь-7»]], на каждой выполнена надпись «ВЗЯТКА», видимая в ультрафиолете. Образец вещества упакован и опечатан."));
+add(T([700, 2800, CW - 3500], ["№", "Достоинство, руб.", "Серия и номер купюры"], [
   ["1", "", ""], ["2", "", ""], ["3", "", ""], ["4", "", ""], ["5", "", ""],
 ], { center: [0] }));
-add(SP(80));
-add(P("Денежные средства в сумме [[__]] рублей вручены [[звание, И.О. Фамилия]] для использования в оперативном эксперименте."));
-add(SIGN(["Протокол составил:"]));
-add(SIGN(["Денежные средства получил:"]));
-add(SIGN(["Участвующие лица:"]));
+add(SP(120));
+add(P("**3. Вручение.** Денежные средства и технические средства записи [[наименование]] вручены [[звание, И.О. Фамилия]] для участия в оперативном эксперименте."));
+add(SIGN(["Акт составил:"]));
+add(SIGN(["Денежные и технические средства получил:"]));
 
-// 5. Протокол задержания
-add(APPX(5, "Протокол задержания и личного досмотра"));
+// 6. Акт оперативного эксперимента
+add(APPX(6, "Акт оперативного эксперимента"));
 add(LETTERHEAD());
-add(DOC_TITLE("П Р О Т О К О Л", "задержания и личного досмотра"));
+add(DOC_TITLE("А К Т", "проведения оперативно-розыскного мероприятия «оперативный эксперимент»"));
 add(DATE_NO(), CITY());
-add(P("Время задержания: [[__ ч __ мин]]. Место задержания: [[адрес]].", { noIndent: true }));
-add(P("[[Должность, звание, И.О. Фамилия]] с участием [[И.О. Фамилия]], с применением видеозаписи, на основании п. «в» ст. 9, п. «м» ст. 10 ФЗ «О ФСБ» произвёл задержание и личный досмотр:"));
-add(T([3600, CW - 3600], null, [
+add(P("Начато в [[__ ч __ мин]], окончено в [[__ ч __ мин]].", { noIndent: true }));
+add(P("[[Должность, звание, И.О. Фамилия]] на основании постановления от [[дата]] № [[номер]], с применением видеозаписи, провёл оперативно-розыскное мероприятие «оперативный эксперимент» в отношении [[должность, ведомство, Ф.И.О.]]."));
+add(P("**В ходе мероприятия зафиксировано:**", { noIndent: true, keepNext: true }));
+add(P("[[__ ч __ мин]] — [[сотрудник в роли заявителя]] прибыл к [[место]]."));
+add(P("[[__ ч __ мин]] — к нему подошёл [[объект]]. В ходе разговора [[объект]] [[высказал требование / назвал сумму]]: «[[дословно]]»."));
+add(P("[[__ ч __ мин]] — [[объект]] принял денежные средства в сумме [[сумма]] рублей и [[убрал их в …]]."));
+add(P("[[__ ч __ мин]] — подан сигнал, [[объект]] задержан сотрудниками ФСБ."));
+add(P("По окончании мероприятия технические средства возвращены, записи перенесены на носитель [[наименование]], который упакован и опечатан."));
+add(P("Приложения: носитель с видеозаписью; стенограмма разговора на [[__]] л.", { noIndent: true }));
+add(SIGN(["Акт составил:"]));
+
+// 7. Протокол задержания
+add(APPX(7, "Протокол задержания"));
+add(LETTERHEAD());
+add(DOC_TITLE("П Р О Т О К О Л", "задержания подозреваемого"));
+add(DATE_NO(), CITY());
+add(P("Протокол составлен в [[__ ч __ мин]].", { noIndent: true }));
+add(P("[[Должность, звание, И.О. Фамилия]] на основании п. «в» ст. 9, п. «м» ст. 10 ФЗ «О ФСБ» составил настоящий протокол о задержании [[дата]] в [[__ ч __ мин]] по адресу: [[место задержания]]:"));
+add(T([3900, CW - 3900], null, [
   ["**Фамилия, имя, отчество**", ""],
   ["**Число, месяц, год рождения**", ""],
   ["**Место службы, должность, звание**", ""],
   ["**Документ, удостоверяющий личность**", ""],
-  ["**Основание задержания**", "Подозрение в совершении преступления, предусмотренного ч. 1 ст. 15.4 УК РО; лицо застигнуто при совершении преступления / [[иное]]"],
-  ["**Применённые меры**", "☐ физическая сила  ☐ специальные средства (наручники)  ☐ оружие (демонстрация)\nОснование: ст. [[__]] ФЗ «О ФСБ»"],
-  ["**Права разъяснены**", "в [[__ ч __ мин]] под видеозапись. Задержанный: ☐ права понятны  ☐ заявил: [[…]]"],
-  ["**Требование адвоката**", "☐ нет  ☐ да, в [[__ ч __ мин]]; адвокат допущен в [[__ ч __ мин]]"],
-  ["**Добровольная выдача**", "Перед досмотром предложено добровольно выдать предметы, полученные незаконным путём. Задержанный заявил: [[…]]"],
+  ["**Основания и мотивы задержания**", "Подозрение в совершении преступления, предусмотренного ч. 1 ст. 15.4 УК РО. Лицо задержано непосредственно после передачи ему денежных средств [[иное]]"],
+  ["**Применённые меры**", "физическая сила / наручники / демонстрация оружия — [[нужное]]"],
+  ["**Разъяснение прав**", "Права разъяснены в [[__ ч __ мин]] под видеозапись"],
+  ["**Адвокат**", "[[не требовался / потребован в __ ч __ мин, допущен в __ ч __ мин]]"],
+  ["**Уведомление прокурора**", "Направлено в [[__ ч __ мин]]"],
 ]));
-add(SP(80));
-add(P("В ходе личного досмотра обнаружено и изъято:", { noIndent: true, keepNext: true }));
-add(T([600, 4200, 1900, CW - 6700], ["№", "Наименование", "Кол-во / сумма", "Упаковка"], [
-  ["1", "Денежные средства (купюры с надписью «ВЗЯТКА» в УФ-свете)", "", "сейф-пакет № [[__]]"],
+add(SP(120));
+add(P("**Результаты личного обыска.** Перед обыском предложено добровольно выдать предметы, полученные незаконным путём. Задержанный заявил: [[…]]. Обнаружено и изъято:", { keepNext: true }));
+add(T([700, 4400, 1900, CW - 7000], ["№", "Наименование", "Кол-во, сумма", "Упаковка"], [
+  ["1", "Денежные средства с надписью «ВЗЯТКА» в ультрафиолете", "", "сейф-пакет № [[__]]"],
   ["2", "Смывы с ладоней на ватные тампоны", "", "пакет № [[__]]"],
   ["3", "Табельное оружие", "", ""],
   ["4", "", "", ""],
 ], { center: [0] }));
-add(SP(80));
-add(P("УФ-исследование ладоней: [[результат]]. Изъятое упаковано, опечатано, снабжено пояснительными надписями и подписями участвующих лиц."));
+add(SP(120));
 add(P("Заявления и замечания задержанного: [[…]]", { noIndent: true }));
 add(SIGN(["Протокол составил:"]));
 add(SIGN(["Задержанный (при отказе от подписи — отметка об отказе):"]));
 add(SIGN(["Адвокат (при участии):"]));
 
-// 6. Уведомление
-add(APPX(6, "Уведомление о задержании должностного лица"));
+// 8. Постановление о представлении результатов + сопроводительное письмо
+add(APPX(8, "Постановление о представлении результатов в прокуратуру"));
+add(RIGHT_BLOCK([
+  "УТВЕРЖДАЮ", "Руководитель ССКБ", "Управления собственной безопасности", "по городу Москва",
+  "_______________ / [[И.О. Фамилия]]", "«___» ____________ 2026 г.",
+], { boldFirst: true }));
+add(DOC_TITLE("П О С Т А Н О В Л Е Н И Е", "о представлении результатов оперативно-розыскной деятельности в прокуратуру"));
+add(DATE_NO(), CITY());
+add(P("[[Должность, специальное звание, И.О. Фамилия]], рассмотрев материалы оперативно-розыскного мероприятия «оперативный эксперимент», проведённого [[дата]] в отношении [[должность, ведомство, Ф.И.О.]],"));
+add(HEADWORD("У С Т А Н О В И Л :"));
+add(P("[[Когда, где и в отношении кого проведено мероприятие, какие результаты получены.]] Полученные результаты содержат сведения о признаках преступления, предусмотренного ч. 1 ст. 15.4 УК РО, и могут служить основанием для принятия процессуального решения."));
+add(P("Руководствуясь п. «а» ст. 9, ст. 18 ФЗ «О ФСБ»,"));
+add(HEADWORD("П О С Т А Н О В И Л :"));
+add(SUB([
+  "Представить в [[наименование прокуратуры]] для принятия процессуального решения следующие результаты оперативно-розыскной деятельности: [[перечень документов с количеством листов; носители записей]].",
+  "Сведения, составляющие государственную тайну, рассекречены постановлением от [[дата]] № [[номер]] [[либо: не содержатся]].",
+]));
+add(SIGN(["Оперуполномоченный УСБ-М", "[[специальное звание]]"]));
+add(P("(образец сопроводительного письма — на следующей странице)", { noIndent: true, align: CE, before: 240, size: TBL }));
+add(P("", { pageBreakBefore: true, after: 0 }));
+add(LETTERHEAD());
+add(RIGHT_BLOCK(["Прокурору [[наименование]]", "[[звание, И.О. Фамилия]]"], { after: 200 }));
+add(DATE_NO());
+add(P("О направлении результатов оперативно-розыскной деятельности", { noIndent: true, align: L, bold: true, before: 120, after: 200 }));
+add(P("Направляю Вам результаты оперативно-розыскной деятельности в отношении [[должность, ведомство, Ф.И.О.]], подозреваемого в совершении преступления, предусмотренного ч. 1 ст. 15.4 УК РО, для принятия процессуального решения."));
+add(P("Приложение: [[перечень]] на [[__]] л., носители — [[__]] шт.", { noIndent: true }));
+add(SIGN(["Руководитель ССКБ УСБ-М"]));
+
+// 9. Уведомление
+add(APPX(9, "Уведомление о задержании"));
 add(LETTERHEAD());
 add(RIGHT_BLOCK(["Руководителю [[ведомство]]", "[[звание, И.О. Фамилия]]", "", "Копия: прокурору", "[[И.О. Фамилия]]"]));
 add(DOC_TITLE("У В Е Д О М Л Е Н И Е", "о задержании должностного лица"));
 add(DATE_NO(), CITY());
 add(P("Уведомляю, что [[дата]] в [[время]] сотрудниками Управления собственной безопасности ФСБ по городу Москва в ходе оперативно-розыскного мероприятия задержан [[должность, звание, Ф.И.О., дата рождения]] по подозрению в совершении преступления, предусмотренного ч. 1 ст. 15.4 УК РО."));
-add(P("Задержанный находится в здании ФСБ по адресу: г. Москва, ул. Большая Лубянка, д. 27."));
-add(P("Приглашаю Вас (уполномоченного представителя) для ознакомления с результатами мероприятия [[дата]] в [[время]]."));
-add(P("На основании п. «н», «р» ст. 10 ФЗ «О ФСБ» прошу представить сведения о задержанном: должностные обязанности, график несения службы, закреплённые участок и транспорт."));
-add(P("Сведения о ходе мероприятия до завершения следственных действий разглашению не подлежат."));
+add(P("Задержанный находится в здании ФСБ по адресу: г. Москва, ул. Большая Лубянка, д. 27. Материалы будут направлены в прокуратуру для принятия процессуального решения."));
+add(P("Приглашаю Вас (уполномоченного представителя) для ознакомления с результатами мероприятия [[дата]] в [[время]]. На основании п. «н», «р» ст. 10 ФЗ «О ФСБ» прошу представить сведения о задержанном: должностные обязанности, график несения службы, закреплённые участок и транспорт."));
+add(P("Сведения о ходе мероприятия разглашению не подлежат."));
 add(SIGN(["Руководитель мероприятия", "[[должность, звание]]"]));
 
-// 7. Информационное сообщение
-add(APPX(7, "Информационное сообщение для публикации"));
+// 10. Информационное сообщение
+add(APPX(10, "Информационное сообщение для публикации"));
 add(LETTERHEAD());
 add(DOC_TITLE("И Н Ф О Р М А Ц И О Н Н О Е   С О О Б Щ Е Н И Е"));
 add(DATE_NO(), CITY());
-add(P("Сотрудниками Управления собственной безопасности Федеральной службы безопасности по городу Москва во взаимодействии с подразделениями специального назначения «Альфа» и «Вымпел» в ходе оперативно-розыскного мероприятия задержан с поличным [[должность]] [[ведомство]] [[Фамилия И.О.]], [[год]] года рождения, при получении взятки в размере [[сумма]] рублей."));
-add(P("По имеющимся данным, денежные средства предназначались за [[…]]."));
-add(P("Следственным отделом ФСБ по городу Москва возбуждено уголовное дело по признакам преступления, предусмотренного ч. 1 ст. 15.4 УК РО («Получение взятки»). Задержанному назначено наказание в виде [[…]]."));
-add(P("Проводятся следственные действия, направленные на установление иных эпизодов противоправной деятельности и возможных соучастников."));
-add(P("К сообщению прилагается оперативная видеозапись задержания."));
-add(SP(100));
-add(NOTE("ПЕРЕД ПУБЛИКАЦИЕЙ", [
+add(P("Управлением собственной безопасности ФСБ по городу Москва во взаимодействии с подразделениями специального назначения «Альфа» и «Вымпел» в ходе оперативно-разыскных мероприятий задержан [[должность]] [[ведомство]] [[Фамилия И.О.]], [[год]] года рождения, подозреваемый в получении взятки."));
+add(P("По имеющимся данным, [[дата]] указанное должностное лицо получило от гражданина денежные средства в сумме [[сумма]] рублей за [[…]]. Передача денежных средств задокументирована с применением средств видеофиксации."));
+add(P("Материалы оперативно-разыскной деятельности направлены в прокуратуру для принятия процессуального решения. Руководство [[ведомства]] уведомлено."));
+add(P("Проводятся мероприятия, направленные на установление возможных иных эпизодов противоправной деятельности и причастных лиц."));
+add(SP(200));
+add(NOTE("Перед публикацией", [
   "– Лицо и никнейм Клиента скрыть: он нужен для следующих мероприятий.",
-  "– Лица бойцов ГЗ в балаклавах; фамилии бойцов не называются.",
-  "– Не раскрывать методы работы (пометка денег, условные сигналы, позывные).",
-  "– Публиковать после разбора, когда руководство ведомства и прокурор уже уведомлены.",
-], "info"));
+  "– Лица бойцов ГЗ скрыты балаклавами, фамилии бойцов не называются.",
+  "– Методы работы (пометка денег, сигналы, позывные) не раскрываются.",
+  "– Только формулировки подозрения: «подозреваемый», «по имеющимся данным».",
+  "– Публикация — после разбора, когда прокурор и руководство ведомства уведомлены.",
+]));
 add(SIGN(["Руководитель ССКБ УСБ-М"]));
 
-// 8. Памятки
-add(APPX(8, "Памятки: бойцу группы захвата и оперативнику УСБ-М"));
+// 11. Памятки
+add(APPX(11, "Памятки"));
 add(NOTE("ПАМЯТКА БОЙЦУ ГРУППЫ ЗАХВАТА", [
   "1. Сигнал к началу — только «РЕАЛИЗАЦИЯ» от Первого.",
   "2. Первая команда — «РАБОТАЕТ ФСБ!».",
   "3. Команды подаёт командир. Ты молчишь и работаешь.",
   "4. Руки объекта — главная угроза и главное доказательство.",
-  "5. Уложил → оружие объекта изъял → наручники → доклад.",
+  "5. Уложил → оружие изъял → наручники → доклад.",
   "6. Деньги не трогать до следователя.",
-  "7. Оружие в готовности — ещё не право стрелять (ст. 13 ФЗ «О ФСБ»).",
+  "7. Оружие в готовности — ещё не право стрелять.",
   "8. Лежачего не бить, не материться.",
-  "9. Посторонних и коллег объекта — отсечь и предупредить о ст. 17.8 УК РО.",
+  "9. Посторонних и коллег объекта — отсечь, предупредить о ст. 17.8 УК РО.",
   "10. После «под контролем» — тишина, работает СОГ.",
-], "warn", { size: 25, after: 110 }));
-add(SP(240));
+]));
+add(SP(300));
 add(NOTE("ПАМЯТКА ОПЕРАТИВНИКУ УСБ-М", [
-  "1. Нет служебного задания и записи — нет мероприятия.",
-  "2. Одно предложение. Отказ — «ОТБОЙ».",
-  "3. На записи: кто получил, сколько, за что.",
-  "4. Сигнал — только после фактической передачи.",
+  "1. Нет информации о вымогательстве — нет мероприятия.",
+  "2. Нет служебного задания и записи — Клиент не выходит.",
+  "3. Деньги первым не предлагаем. Инициатива — только от объекта.",
+  "4. На записи: кто получил, сколько, за что.",
   "5. ФИО → дата рождения → место службы → оружие → что получил.",
   "6. Задержание → статья → права → «Вам понятны ваши права?».",
-  "7. «Предлагаю добровольно выдать…» → досмотр → УФ → упаковка.",
-  "8. Уведомить руководство объекта и прокурора.",
-  "9. Текст зачитки готов заранее и прочитан вслух 2 раза.",
-  "10. На любой вопрос прокурора — ответ со ссылкой на норму.",
-], "info", { size: 25, after: 110 }));
+  "7. «Предлагаю добровольно выдать…» → обыск → ультрафиолет → смывы.",
+  "8. Только язык подозрения: «подозреваемый», «по имеющимся данным».",
+  "9. Решение принимает прокуратура. Наша задача — факты и материалы.",
+]));
 
 // Лист ознакомления
 toc.push({ id: "list_oznakomleniya", text: "Лист ознакомления" });
 add(new Paragraph({
-  heading: HeadingLevel.HEADING_1, alignment: CE, pageBreakBefore: true, keepNext: true, spacing: { after: 200 },
-  children: [new Bookmark({ id: "list_oznakomleniya", children: [new TextRun({ text: "ЛИСТ ОЗНАКОМЛЕНИЯ", bold: true, size: 26, font: FONT, color: "000000" })] })],
+  heading: HeadingLevel.HEADING_1, alignment: CE, pageBreakBefore: true, keepNext: true, spacing: { after: 240 },
+  children: [new Bookmark({ id: "list_oznakomleniya", children: [new TextRun({ text: "ЛИСТ ОЗНАКОМЛЕНИЯ", bold: true, size: BODY, font: FONT })] })],
 }));
-add(P("С методическими рекомендациями УСБ-М по организации и проведению оперативного эксперимента и задержанию должностного лица ознакомлен(а):", { align: CE, noIndent: true, after: 160 }));
-add(T([600, 3700, 1900, 1500, CW - 7700], ["№", "Фамилия, имя", "№ удостоверения", "Дата", "Подпись"],
-  Array.from({ length: 22 }, (_, i) => [String(i + 1), "", "", "", ""]), { center: [0] }));
+add(P("С методическими рекомендациями УСБ-М ознакомлен(а):", { align: CE, noIndent: true, after: 200 }));
+add(T([700, 3800, 1900, 1400, CW - 7800], ["№", "Фамилия, имя", "№ удостоверения", "Дата", "Подпись"],
+  Array.from({ length: 20 }, (_, i) => [String(i + 1), "", "", "", ""]), { center: [0] }));
 
 // ================================================================= ТИТУЛ + СОДЕРЖАНИЕ
 const title = [
-  ...RIGHT_BLOCK(["Для служебного пользования", "Экз. № ___"], { left: 6237, after: 360 }),
+  ...RIGHT_BLOCK(["Для служебного пользования", "Экз. № ___"], { left: 5900, after: 360 }),
   ...RIGHT_BLOCK([
     "УТВЕРЖДАЮ", "Руководитель ССКБ", "Управления собственной безопасности", "по городу Москва",
     "_______________ / [[И.О. Фамилия]]", "«___» ____________ 2026 г.",
-  ], { boldFirst: true, after: 1400 }),
-  P("ФЕДЕРАЛЬНАЯ СЛУЖБА БЕЗОПАСНОСТИ РОССИЙСКОЙ ФЕДЕРАЦИИ", { align: CE, noIndent: true, bold: true, after: 0 }),
-  P("Управление собственной безопасности по городу Москва", { align: CE, noIndent: true, after: 0 }),
-  P("г. Москва, ул. Большая Лубянка, д. 27", { align: CE, noIndent: true, size: 21, after: 1100 }),
-  P("М Е Т О Д И Ч Е С К И Е   Р Е К О М Е Н Д А Ц И И", { align: CE, noIndent: true, bold: true, size: 32, after: 240 }),
-  P("по организации и проведению оперативного эксперимента и задержанию должностного лица, подозреваемого в получении взятки", { align: CE, noIndent: true, bold: true, size: 27, after: 480, left: 567, firstLine: 0 }),
-  P("для руководителей мероприятий, оперативного состава УСБ-М, слушателей Академии УСБ-М, следователей ФСБ и приданных подразделений специального назначения «Альфа» и «Вымпел»", { align: CE, noIndent: true, italics: true, after: 2600, left: 850 }),
+  ], { boldFirst: true, after: 1300 }),
+  P("ФЕДЕРАЛЬНАЯ СЛУЖБА БЕЗОПАСНОСТИ РОССИЙСКОЙ ФЕДЕРАЦИИ", { align: CE, noIndent: true, bold: true, after: 0, size: 26 }),
+  P("Управление собственной безопасности по городу Москва", { align: CE, noIndent: true, after: 0, size: 26 }),
+  P("г. Москва, ул. Большая Лубянка, д. 27", { align: CE, noIndent: true, size: TBL, after: 1100 }),
+  P("М Е Т О Д И Ч Е С К И Е   Р Е К О М Е Н Д А Ц И И", { align: CE, noIndent: true, bold: true, size: 32, after: 280 }),
+  P("по документированию получения взятки должностным лицом в ходе оперативного эксперимента и задержанию подозреваемого", { align: CE, noIndent: true, bold: true, after: 480, left: 567, firstLine: 0 }),
+  P("для руководителей мероприятий, оперативного состава УСБ-М, слушателей Академии УСБ-М, следователей ФСБ и приданных подразделений специального назначения «Альфа» и «Вымпел»", { align: CE, noIndent: true, after: 2200, left: 850 }),
   P("г. Москва — 2026", { align: CE, noIndent: true, bold: true, after: 0 }),
 ];
 
 const tocBlock = [
   new Paragraph({
-    pageBreakBefore: true, alignment: CE, spacing: { after: 280 },
-    children: [new TextRun({ text: "СОДЕРЖАНИЕ", bold: true, size: 26 })],
+    pageBreakBefore: true, alignment: CE, spacing: { after: 240 },
+    children: [new TextRun({ text: "СОДЕРЖАНИЕ", bold: true, size: BODY })],
   }),
   ...toc.map((e) => new Paragraph({
     tabStops: [{ type: TabStopType.RIGHT, position: CW, leader: LeaderType.DOT }],
-    spacing: { after: 90 },
-    indent: e.id.startsWith("prilozhenie") || e.id === "list_oznakomleniya" ? { left: 0 } : undefined,
+    spacing: { after: 50, line: 252 },
     children: [
-      new InternalHyperlink({ anchor: e.id, children: [new TextRun({ text: e.text, size: 23 })] }),
-      new TextRun({ children: [new Tab()], size: 23 }),
-      new TextRun({ text: String(tocPages[e.id] ?? "00"), size: 23 }),
+      new InternalHyperlink({ anchor: e.id, children: [new TextRun({ text: e.text, size: 25 })] }),
+      new TextRun({ children: [new Tab()], size: 25 }),
+      new TextRun({ text: String(tocPages[e.id] ?? "00"), size: 25 }),
     ],
   })),
 ];
@@ -1191,7 +1080,7 @@ const tocBlock = [
 // ================================================================= СБОРКА
 const disclaimer = () => new Paragraph({
   alignment: CE, spacing: { after: 0 },
-  children: [new TextRun({ text: "Документ не имеет юридической силы, создан для проекта «Россия Онлайн» и не порождает правовых последствий.", italics: true, size: 15, color: "7F7F7F" })],
+  children: [new TextRun({ text: "Документ не имеет юридической силы, создан для проекта «Россия Онлайн» и не порождает правовых последствий.", size: 15, color: "7F7F7F" })],
 });
 
 const doc = new Document({
@@ -1199,22 +1088,13 @@ const doc = new Document({
   title: "Методические рекомендации УСБ-М: оперативный эксперимент и задержание",
   description: "RP-документ для проекта «Россия Онлайн». Не имеет юридической силы.",
   styles: {
-    default: { document: { run: { font: FONT, size: 24 }, paragraph: { spacing: { line: 276 } } } },
+    default: { document: { run: { font: FONT, size: BODY }, paragraph: { spacing: { line: 276 } } } },
     paragraphStyles: [
       { id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true,
-        run: { font: FONT, size: 26, bold: true, color: "000000" }, paragraph: { spacing: { before: 360, after: 200 }, outlineLevel: 0 } },
+        run: { font: FONT, size: BODY, bold: true, color: "000000" }, paragraph: { spacing: { before: 480, after: 240 }, outlineLevel: 0 } },
       { id: "Heading2", name: "Heading 2", basedOn: "Normal", next: "Normal", quickFormat: true,
-        run: { font: FONT, size: 24, bold: true, color: "000000" }, paragraph: { spacing: { before: 220, after: 100 }, outlineLevel: 1 } },
+        run: { font: FONT, size: BODY, bold: true, color: "000000" }, paragraph: { spacing: { before: 240, after: 120 }, outlineLevel: 1 } },
     ],
-  },
-  numbering: {
-    config: [{
-      reference: "dash",
-      levels: [
-        { level: 0, format: LevelFormat.BULLET, text: "–", alignment: L, style: { paragraph: { indent: { left: 1134, hanging: 425 } } } },
-        { level: 1, format: LevelFormat.BULLET, text: "•", alignment: L, style: { paragraph: { indent: { left: 1559, hanging: 425 } } } },
-      ],
-    }],
   },
   sections: [{
     properties: {
@@ -1225,12 +1105,12 @@ const doc = new Document({
       },
     },
     headers: {
-      default: new Header({ children: [new Paragraph({ alignment: RI, children: [new TextRun({ text: "Методические рекомендации УСБ-М · оперативный эксперимент и задержание", italics: true, size: 16, color: "808080" })] })] }),
+      default: new Header({ children: [new Paragraph({ alignment: RI, children: [new TextRun({ text: "Методические рекомендации УСБ-М", size: 18, color: "7F7F7F" })] })] }),
       first: new Header({ children: [new Paragraph({ children: [] })] }),
     },
     footers: {
       default: new Footer({ children: [
-        new Paragraph({ alignment: CE, spacing: { after: 0 }, children: [new TextRun({ children: [PageNumber.CURRENT], size: 20 })] }),
+        new Paragraph({ alignment: CE, spacing: { after: 0 }, children: [new TextRun({ children: [PageNumber.CURRENT], size: 22 })] }),
         disclaimer(),
       ] }),
       first: new Footer({ children: [disclaimer()] }),

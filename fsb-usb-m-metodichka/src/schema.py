@@ -52,15 +52,16 @@ def fighter(x, y, label, color, face=None, size=46):
         ang = math.atan2(face[1] - y, face[0] - x)
         r0, r1 = size * 0.55, size * 0.55 + 26
         arrow(x + r0 * math.cos(ang), y + r0 * math.sin(ang),
-              x + r1 * math.cos(ang), y + r1 * math.sin(ang), color, width=3, head=11)
+              x + r1 * math.cos(ang), y + r1 * math.sin(ang), INK, width=3, head=11)
     h = size / 2
-    box(x - h, y - h, x + h, y + h, color, outline="white", width=2, radius=6)
-    text(x, y + 1, label, size=19, fill="white")
+    box(x - h, y - h, x + h, y + h, color, outline=INK, width=2, radius=6)
+    text(x, y + 1, label, size=19, fill="white" if color in ("#262626", "#6e6e6e") else INK)
 
 
 def person(x, y, label, color, r=30):
-    d.ellipse([(x - r) * S, (y - r) * S, (x + r) * S, (y + r) * S], fill=color, outline="white", width=3 * S)
-    text(x, y + 1, label, size=22, fill="white")
+    dark = color.lower() in ("#000000", "#262626")
+    d.ellipse([(x - r) * S, (y - r) * S, (x + r) * S, (y + r) * S], fill=color, outline=INK, width=3 * S)
+    text(x, y + 1, label, size=22, fill="white" if dark else INK)
 
 
 def diamond(x, y, label, color="#111", r=34):
@@ -69,27 +70,28 @@ def diamond(x, y, label, color="#111", r=34):
     text(x, y + 1, label, size=16, fill="white")
 
 
-C_OBJ, C_CL, C_Z, C_P, C_B, C_KV, C_S = "#c62828", "#1565c0", "#2e7d32", "#e65100", "#546e7a", "#6a1b9a", "#00838f"
+C_OBJ, C_CL, C_Z, C_P, C_B, C_KV, C_S = "#000000", "#ffffff", "#262626", "#6e6e6e", "#a6a6a6", "#ffffff", "#ffffff"
+INK = "#000000"
 
 # --- местность ---------------------------------------------------------------
-box(40, 40, 1760, 200, "#e8e2d6", outline="#b9b1a2", width=2)          # здание
-text(220, 120, "ЗДАНИЕ", 26, "#8a8171")
-box(1290, 170, 1430, 200, "#8d6e63")                                   # дверь
-text(1360, 140, "Вход", 22, "#5d4037")
+box(40, 40, 1760, 200, "#e9e9e9", outline="#9a9a9a", width=2)          # здание
+text(220, 120, "ЗДАНИЕ", 26, "#6b6b6b")
+box(1290, 170, 1430, 200, "#4d4d4d")                                   # дверь
+text(1360, 140, "Вход", 22, "#333333")
 box(40, 200, 1760, 420, "#f4f4f4")                                     # тротуар
 text(1650, 400, "тротуар", 18, "#9e9e9e", bold=False)
-box(40, 420, 1760, 800, "#d5d5d5")                                     # проезжая часть
+box(40, 420, 1760, 800, "#d9d9d9")                                     # проезжая часть
 for x in range(60, 1760, 90):                                          # разметка
     box(x, 667, x + 50, 673, "white")
 text(1650, 780, "проезжая часть", 18, "#8a8a8a", bold=False)
 box(40, 800, 1760, 880, "#f4f4f4")                                     # тротуар напротив
 
 # --- транспорт -------------------------------------------------------------------
-box(470, 448, 700, 540, "#263238", radius=10)
+box(470, 448, 700, 540, "#3a3a3a", radius=10)
 text(585, 482, "БУС-2", 24, "white"); text(585, 515, "водитель", 16, "#cfd8dc", bold=False)
-box(740, 452, 960, 536, "white", outline="#37474f", width=3, radius=14)
-text(850, 494, "ТС объекта", 20, "#37474f")
-box(1000, 448, 1230, 540, "#263238", radius=10)
+box(740, 452, 960, 536, "white", outline=INK, width=3, radius=14)
+text(850, 494, "ТС объекта", 20, INK)
+box(1000, 448, 1230, 540, "#3a3a3a", radius=10)
 text(1115, 482, "БУС-1", 24, "white"); text(1115, 515, "водитель", 16, "#cfd8dc", bold=False)
 
 # --- объект и клиент --------------------------------------------------------------
@@ -123,15 +125,15 @@ fighter(1120, 600, "Кв2", C_KV)
 fighter(1180, 600, "Кв3", C_KV)
 diamond(520, 320, "КГЗ")
 person(520, 840, "С", C_S, r=26)
-text(520, 790, "наблюдение /", 16, C_S, bold=False)
-text(520, 808, "видеозапись", 16, C_S, bold=False)
+text(520, 790, "наблюдение /", 16, INK, bold=False)
+text(520, 808, "видеозапись", 16, INK, bold=False)
 
 # маршруты выдвижения захвата из бусов
-arrow(700, 470, 770, 395, C_Z, width=3, head=14, dash=9)
-arrow(1000, 470, 950, 405, C_Z, width=3, head=14, dash=9)
+arrow(700, 470, 770, 395, INK, width=3, head=14, dash=9)
+arrow(1000, 470, 950, 405, INK, width=3, head=14, dash=9)
 
 # --- легенда ---------------------------------------------------------------------
-box(40, 900, 1760, 1215, "#fafafa", outline="#cfcfcf", width=2, radius=8)
+box(40, 900, 1760, 1215, "#ffffff", outline="#7f7f7f", width=2, radius=8)
 items = [
     ("person", C_OBJ, "О", "объект"),
     ("person", C_CL, "Кл", "Клиент (подставной)"),
@@ -140,7 +142,7 @@ items = [
     ("sq", C_P, "П", "прикрытие — 4"),
     ("sq", C_B, "Б", "блокирование — 6"),
     ("sq", C_KV, "Кв", "конвой — 3"),
-    ("bus", "#263238", "", "бус + водитель — 2"),
+    ("bus", "#3a3a3a", "", "бус + водитель — 2"),
     ("person", C_S, "С", "наблюдение / видео"),
 ]
 cols = [90, 690, 1250]
@@ -153,16 +155,16 @@ for i, (kind, col, lab, desc) in enumerate(items):
         diamond(cx, cy, lab, col, r=28)
     elif kind == "sq":
         w = 30 if len(lab) > 2 else 22
-        box(cx - w, cy - 22, cx + w, cy + 22, col, radius=6)
-        text(cx, cy + 1, lab, 16 if len(lab) > 2 else 18, "white")
+        box(cx - w, cy - 22, cx + w, cy + 22, col, outline=INK, width=2, radius=6)
+        text(cx, cy + 1, lab, 16 if len(lab) > 2 else 18, "white" if col in ("#262626", "#6e6e6e") else INK)
     else:
         box(cx - 34, cy - 20, cx + 34, cy + 20, col, radius=6)
-    text(cx + 50, cy, desc, 23, "#263238", bold=False, anchor="lm")
-arrow(60, 1150, 140, 1150, C_Z, width=3, head=12, dash=8)
-text(160, 1150, "выдвижение из бусов по команде «РЕАЛИЗАЦИЯ»", 21, "#444", bold=False, anchor="lm")
-arrow(1000, 1150, 1060, 1150, "#555", width=3, head=12)
-text(1080, 1150, "направление контроля бойца", 21, "#444", bold=False, anchor="lm")
-text(900, 1192, "Бойцы 1–3 работают по объекту, боец 4 — по Клиенту (ГЗ укладывает всех, Клиента не выделяет).", 19, "#666", bold=False)
+    text(cx + 50, cy, desc, 23, INK, bold=False, anchor="lm")
+arrow(60, 1150, 140, 1150, INK, width=3, head=12, dash=8)
+text(160, 1150, "выдвижение из бусов по команде «РЕАЛИЗАЦИЯ»", 21, INK, bold=False, anchor="lm")
+arrow(1000, 1150, 1060, 1150, INK, width=3, head=12)
+text(1080, 1150, "направление контроля бойца", 21, INK, bold=False, anchor="lm")
+text(900, 1192, "Бойцы 1–3 работают по объекту, боец 4 — по Клиенту (ГЗ укладывает всех, Клиента не выделяет).", 19, "#333333", bold=False)
 
 out = Path(__file__).with_name("schema.png")
 img.resize((W, H), Image.LANCZOS).save(out, optimize=True)
